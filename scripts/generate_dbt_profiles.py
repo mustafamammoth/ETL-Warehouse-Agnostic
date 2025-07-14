@@ -21,7 +21,7 @@ def generate_profiles_yml():
                 'target': 'dev',
                 'outputs': {
                     'dev': connection_config,
-                    'prod': connection_config.copy()  # Same config for now
+                    'prod': connection_config.copy()
                 }
             }
         }

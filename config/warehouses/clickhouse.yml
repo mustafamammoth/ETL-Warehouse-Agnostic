@@ -1,7 +1,6 @@
 warehouse:
   name: "ClickHouse"
   type: "clickhouse"
-  description: "High-performance analytics database"
   
 connection:
   host: "your-clickhouse.cloud"
@@ -10,16 +9,3 @@ connection:
   user: "default"
   password: "your_password"
   secure: true
-  
-performance:
-  estimated_monthly_cost: 500
-  query_speed: "Very Fast"
-  concurrent_users: 200
-  data_size_limit: "10TB"
-  
-features:
-  supports_clustering: true
-  supports_time_travel: false
-  supports_auto_scaling: true
-  json_support: true
-  window_functions: true

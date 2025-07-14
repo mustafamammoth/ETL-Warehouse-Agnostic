@@ -1,15 +1,27 @@
 data_platform:
-  target: dev
   outputs:
     dev:
-      type: postgres
+      connect_timeout: 10
+      dbname: airflow
       host: postgres
-      user: postgres
+      keepalives_idle: 0
       password: postgres
       port: 5432
-      dbname: airflow
+      retries: 1
       schema: public
       threads: 4
-      keepalives_idle: 0
+      type: postgres
+      user: postgres
+    prod:
       connect_timeout: 10
+      dbname: airflow
+      host: postgres
+      keepalives_idle: 0
+      password: postgres
+      port: 5432
       retries: 1
+      schema: public
+      threads: 4
+      type: postgres
+      user: postgres
+  target: dev

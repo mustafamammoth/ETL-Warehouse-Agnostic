@@ -8,6 +8,7 @@ import requests
 import pandas as pd
 import time
 import subprocess
+import sys
 
 # Default arguments for the DAG
 default_args = {
@@ -156,73 +157,250 @@ def extract_acumatica_endpoint(endpoint_name, **context):
         print(f"❌ Failed to extract {endpoint_name}: {e}")
         raise
 
-def load_csv_to_postgres(**context):
-    """Load CSV files to PostgreSQL for dbt processing"""
+def load_csv_to_warehouse(**context):
+    """Load CSV files to any warehouse (dynamic)"""
     
-    print("📊 Loading CSV files to PostgreSQL...")
+    print("📊 Loading CSV files to warehouse...")
     
     try:
-        import pandas as pd
-        from sqlalchemy import create_engine, text
+        import sys
+        sys.path.append('/opt/airflow/config')
+        from warehouse_config import load_warehouse_config, get_active_warehouse, get_connection_string
         
-        # Create SQLAlchemy engine
-        connection_string = "postgresql://postgres:postgres@postgres:5432/airflow"
-        engine = create_engine(connection_string)
+        # Get warehouse configuration
+        warehouse_type = get_active_warehouse()
+        config = load_warehouse_config(warehouse_type)
         
-        # Test connection
-        print("✅ Connected to PostgreSQL")
+        print(f"Loading to: {config['warehouse']['name']} ({warehouse_type})")
         
-        # Load each CSV file directly to public schema
-        csv_files = {
-            'raw_customers': '/opt/airflow/data/raw/acumatica/customers.csv',
-            'raw_sales_orders': '/opt/airflow/data/raw/acumatica/sales_orders.csv',
-            'raw_sales_invoices': '/opt/airflow/data/raw/acumatica/sales_invoices.csv',
-            'raw_stock_items': '/opt/airflow/data/raw/acumatica/stock_items.csv'
-        }
-        
-        for table_name, csv_path in csv_files.items():
-            if os.path.exists(csv_path):
-                print(f"   Loading {csv_path}...")
-                df = pd.read_csv(csv_path)
-                
-                # Use begin() for proper transaction handling
-                with engine.begin() as conn:  # This auto-commits at the end
-                    try:
-                        # Try to truncate table if it exists
-                        conn.execute(text(f"TRUNCATE TABLE {table_name}"))
-                        print(f"   Truncated existing table {table_name}")
-                        
-                        # Use append since table exists
-                        df.to_sql(
-                            name=table_name,
-                            con=conn,
-                            if_exists='append',
-                            index=False,
-                            method='multi'
-                        )
-                    except Exception as truncate_error:
-                        # Table doesn't exist or truncate failed, create new table
-                        print(f"   Truncate failed, creating new table: {truncate_error}")
-                        df.to_sql(
-                            name=table_name,
-                            con=conn,
-                            if_exists='replace',
-                            index=False,
-                            method='multi'
-                        )
-                
-                print(f"✅ Loaded {len(df)} records to public.{table_name}")
-            else:
-                print(f"⚠️  File not found: {csv_path}")
-        
-        engine.dispose()
-        print("✅ All CSV files loaded to PostgreSQL")
+        # Use warehouse-specific loading logic
+        if warehouse_type == 'postgres':
+            return load_to_postgres_warehouse(config)
+        elif warehouse_type == 'snowflake':
+            return load_to_snowflake_warehouse(config)
+        elif warehouse_type == 'clickhouse':
+            return load_to_clickhouse_warehouse(config)
+        else:
+            raise ValueError(f"Unsupported warehouse: {warehouse_type}")
         
     except Exception as e:
-        print(f"❌ Failed to load data to PostgreSQL: {e}")
+        print(f"❌ Failed to load data to warehouse: {e}")
         import traceback
         print(f"Full error: {traceback.format_exc()}")
         raise
+
+def load_to_postgres_warehouse(config):
+    """PostgreSQL-specific loading"""
+    from sqlalchemy import create_engine, text
+    import pandas as pd
+    
+    # Get connection string
+    sys.path.append('/opt/airflow/config')
+    from warehouse_config import get_connection_string
+    
+    connection_string = get_connection_string('postgres')
+    engine = create_engine(connection_string)
+    
+    csv_files = {
+        'raw_customers': '/opt/airflow/data/raw/acumatica/customers.csv',
+        'raw_sales_orders': '/opt/airflow/data/raw/acumatica/sales_orders.csv',
+        'raw_sales_invoices': '/opt/airflow/data/raw/acumatica/sales_invoices.csv',
+        'raw_stock_items': '/opt/airflow/data/raw/acumatica/stock_items.csv'
+    }
+    
+    total_records = 0
+    for table_name, csv_path in csv_files.items():
+        if os.path.exists(csv_path):
+            print(f"   Loading {csv_path} to PostgreSQL...")
+            df = pd.read_csv(csv_path)
+            
+            with engine.begin() as conn:
+                try:
+                    # Try to truncate table if it exists
+                    conn.execute(text(f"TRUNCATE TABLE {table_name}"))
+                    print(f"   Truncated existing table {table_name}")
+                    
+                    # Use append since table exists
+                    df.to_sql(
+                        name=table_name,
+                        con=conn,
+                        if_exists='append',
+                        index=False,
+                        method='multi'
+                    )
+                except Exception as truncate_error:
+                    # Table doesn't exist or truncate failed, create new table
+                    print(f"   Truncate failed, creating new table: {truncate_error}")
+                    df.to_sql(
+                        name=table_name,
+                        con=conn,
+                        if_exists='replace',
+                        index=False,
+                        method='multi'
+                    )
+            
+            total_records += len(df)
+            print(f"✅ Loaded {len(df)} records to PostgreSQL.{table_name}")
+        else:
+            print(f"⚠️  File not found: {csv_path}")
+    
+    engine.dispose()
+    print(f"✅ PostgreSQL: Total {total_records} records loaded")
+    return total_records
+
+def load_to_snowflake_warehouse(config):
+    """Snowflake-specific loading"""
+    import pandas as pd
+    from sqlalchemy import create_engine
+    
+    sys.path.append('/opt/airflow/config')
+    from warehouse_config import get_connection_string
+    
+    connection_string = get_connection_string('snowflake')
+    engine = create_engine(connection_string)
+    
+    csv_files = {
+        'raw_customers': '/opt/airflow/data/raw/acumatica/customers.csv',
+        'raw_sales_orders': '/opt/airflow/data/raw/acumatica/sales_orders.csv',
+        'raw_sales_invoices': '/opt/airflow/data/raw/acumatica/sales_invoices.csv',
+        'raw_stock_items': '/opt/airflow/data/raw/acumatica/stock_items.csv'
+    }
+    
+    total_records = 0
+    for table_name, csv_path in csv_files.items():
+        if os.path.exists(csv_path):
+            print(f"   Loading {csv_path} to Snowflake...")
+            df = pd.read_csv(csv_path)
+            
+            # Snowflake-specific optimizations
+            df.to_sql(
+                name=table_name.upper(),  # Snowflake prefers uppercase
+                con=engine,
+                if_exists='replace',
+                index=False,
+                method='multi',
+                chunksize=1000  # Batch inserts for better performance
+            )
+            
+            total_records += len(df)
+            print(f"✅ Loaded {len(df)} records to Snowflake.{table_name.upper()}")
+        else:
+            print(f"⚠️  File not found: {csv_path}")
+    
+    engine.dispose()
+    print(f"✅ Snowflake: Total {total_records} records loaded")
+    return total_records
+
+def load_to_clickhouse_warehouse(config):
+    """ClickHouse-specific loading"""
+    import pandas as pd
+    from sqlalchemy import create_engine
+    
+    sys.path.append('/opt/airflow/config')
+    from warehouse_config import get_connection_string
+    
+    connection_string = get_connection_string('clickhouse')
+    engine = create_engine(connection_string)
+    
+    csv_files = {
+        'raw_customers': '/opt/airflow/data/raw/acumatica/customers.csv',
+        'raw_sales_orders': '/opt/airflow/data/raw/acumatica/sales_orders.csv',
+        'raw_sales_invoices': '/opt/airflow/data/raw/acumatica/sales_invoices.csv',
+        'raw_stock_items': '/opt/airflow/data/raw/acumatica/stock_items.csv'
+    }
+    
+    total_records = 0
+    for table_name, csv_path in csv_files.items():
+        if os.path.exists(csv_path):
+            print(f"   Loading {csv_path} to ClickHouse...")
+            df = pd.read_csv(csv_path)
+            
+            # ClickHouse-specific optimizations
+            df.to_sql(
+                name=table_name,
+                con=engine,
+                if_exists='replace',
+                index=False,
+                method='multi'
+            )
+            
+            total_records += len(df)
+            print(f"✅ Loaded {len(df)} records to ClickHouse.{table_name}")
+        else:
+            print(f"⚠️  File not found: {csv_path}")
+    
+    engine.dispose()
+    print(f"✅ ClickHouse: Total {total_records} records loaded")
+    return total_records
+
+
+# def load_csv_to_postgres(**context):
+#     """Load CSV files to PostgreSQL for dbt processing"""
+    
+#     print("📊 Loading CSV files to PostgreSQL...")
+    
+#     try:
+#         import pandas as pd
+#         from sqlalchemy import create_engine, text
+        
+#         # Create SQLAlchemy engine
+#         connection_string = "postgresql://postgres:postgres@postgres:5432/airflow"
+#         engine = create_engine(connection_string)
+        
+#         # Test connection
+#         print("✅ Connected to PostgreSQL")
+        
+#         # Load each CSV file directly to public schema
+#         csv_files = {
+#             'raw_customers': '/opt/airflow/data/raw/acumatica/customers.csv',
+#             'raw_sales_orders': '/opt/airflow/data/raw/acumatica/sales_orders.csv',
+#             'raw_sales_invoices': '/opt/airflow/data/raw/acumatica/sales_invoices.csv',
+#             'raw_stock_items': '/opt/airflow/data/raw/acumatica/stock_items.csv'
+#         }
+        
+#         for table_name, csv_path in csv_files.items():
+#             if os.path.exists(csv_path):
+#                 print(f"   Loading {csv_path}...")
+#                 df = pd.read_csv(csv_path)
+                
+#                 # Use begin() for proper transaction handling
+#                 with engine.begin() as conn:  # This auto-commits at the end
+#                     try:
+#                         # Try to truncate table if it exists
+#                         conn.execute(text(f"TRUNCATE TABLE {table_name}"))
+#                         print(f"   Truncated existing table {table_name}")
+                        
+#                         # Use append since table exists
+#                         df.to_sql(
+#                             name=table_name,
+#                             con=conn,
+#                             if_exists='append',
+#                             index=False,
+#                             method='multi'
+#                         )
+#                     except Exception as truncate_error:
+#                         # Table doesn't exist or truncate failed, create new table
+#                         print(f"   Truncate failed, creating new table: {truncate_error}")
+#                         df.to_sql(
+#                             name=table_name,
+#                             con=conn,
+#                             if_exists='replace',
+#                             index=False,
+#                             method='multi'
+#                         )
+                
+#                 print(f"✅ Loaded {len(df)} records to public.{table_name}")
+#             else:
+#                 print(f"⚠️  File not found: {csv_path}")
+        
+#         engine.dispose()
+#         print("✅ All CSV files loaded to PostgreSQL")
+        
+#     except Exception as e:
+#         print(f"❌ Failed to load data to PostgreSQL: {e}")
+#         import traceback
+#         print(f"Full error: {traceback.format_exc()}")
+#         raise
 
 def debug_database_tables(**context):
     """Debug function to see what tables exist"""
@@ -349,10 +527,17 @@ for endpoint_name in ENDPOINTS.keys():
     )
     extraction_tasks.append(task)
 
-# Load data to PostgreSQL
+# # Load data to PostgreSQL
+# load_task = PythonOperator(
+#     task_id='load_to_postgres',
+#     python_callable=load_csv_to_postgres,
+#     dag=dag
+# )
+
+# Update this task in your DAG
 load_task = PythonOperator(
-    task_id='load_to_postgres',
-    python_callable=load_csv_to_postgres,
+    task_id='load_to_warehouse',  # Changed from 'load_to_postgres'
+    python_callable=load_csv_to_warehouse,  # Changed from load_csv_to_postgres
     dag=dag
 )
 

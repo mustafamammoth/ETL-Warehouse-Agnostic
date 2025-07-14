@@ -67,10 +67,7 @@ def generate_docker_compose():
         }
         
         # Add warehouse-specific service if needed
-        if warehouse == 'postgres':
-            # PostgreSQL is already included above
-            pass
-        elif warehouse == 'clickhouse':
+        if warehouse == 'clickhouse':
             services['clickhouse'] = {
                 'image': 'clickhouse/clickhouse-server:latest',
                 'ports': ['8123:8123', '9000:9000', '9440:9440'],

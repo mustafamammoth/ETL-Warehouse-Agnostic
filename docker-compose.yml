@@ -6,204 +6,74 @@ services:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: airflow
     ports:
-      - "5432:5432"
+    - 5432:5432
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+    - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD", "pg_isready", "-U", "postgres"]
+      test:
+      - CMD
+      - pg_isready
+      - -U
+      - postgres
       interval: 5s
       retries: 5
-
   airflow-init:
     image: apache/airflow:2.7.3-python3.11
     depends_on:
       postgres:
         condition: service_healthy
-    environment:
-      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
-      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://postgres:postgres@postgres/airflow
-      - AIRFLOW__CORE__FERNET_KEY=fb0c_0-l6HiTRHDke8sL-8jz9YOV-tD3Zn3wWZ2CUKxNDlc=
-      - AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=true
-      - AIRFLOW__CORE__LOAD_EXAMPLES=false
-      - AIRFLOW__API__AUTH_BACKENDS=airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session
-      - ACUMATICA_BASE_URL=https://mammoth.klearsystems.com
-      - ACUMATICA_USERNAME=mustafa.zaki
-      - ACUMATICA_PASSWORD=Dingdongbell@123
-    volumes:
-      - ./airflow/dags:/opt/airflow/dags
-      - ./airflow/logs:/opt/airflow/logs
-      - ./airflow/config:/opt/airflow/config
-      - ./airflow/plugins:/opt/airflow/plugins
-      - ./data:/opt/airflow/data
-      - ./dbt:/opt/airflow/dbt  # Add dbt volume
-    user: "${AIRFLOW_UID:-50000}:0"
+    environment: &id001
+    - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+    - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://postgres:postgres@postgres/airflow
+    - AIRFLOW__CORE__FERNET_KEY=fb0c_0-l6HiTRHDke8sL-8jz9YOV-tD3Zn3wWZ2CUKxNDlc=
+    - AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=true
+    - AIRFLOW__CORE__LOAD_EXAMPLES=false
+    - AIRFLOW__API__AUTH_BACKENDS=airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session
+    - ACUMATICA_BASE_URL=https://mammoth.klearsystems.com
+    - ACUMATICA_USERNAME=mustafa.zaki
+    - ACUMATICA_PASSWORD=Dingdongbell@123
+    - ACTIVE_WAREHOUSE=postgres
+    volumes: &id002
+    - ./airflow/dags:/opt/airflow/dags
+    - ./airflow/logs:/opt/airflow/logs
+    - ./airflow/config:/opt/airflow/config
+    - ./airflow/plugins:/opt/airflow/plugins
+    - ./data:/opt/airflow/data
+    - ./dbt:/opt/airflow/dbt
+    - ./config:/opt/airflow/config
+    - ./scripts:/opt/airflow/scripts
+    user: ${AIRFLOW_UID:-50000}:0
     entrypoint: /bin/bash
-    command: |
-      -c "
-      pip install dbt-core dbt-postgres
-      airflow db migrate
-      airflow users create --role Admin --username admin --email admin --firstname admin --lastname admin --password admin
-      "
-
+    command: "\n                -c \"\n                pip install dbt-postgres psycopg2-binary\
+      \ sqlalchemy\n                python /opt/airflow/scripts/generate_dbt_profiles.py\n\
+      \                airflow db migrate\n                airflow users create --role\
+      \ Admin --username admin --email admin --firstname admin --lastname admin --password\
+      \ admin\n                \"\n            "
   airflow-webserver:
     image: apache/airflow:2.7.3-python3.11
     depends_on:
       airflow-init:
         condition: service_completed_successfully
-    environment:
-      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
-      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://postgres:postgres@postgres/airflow
-      - AIRFLOW__CORE__FERNET_KEY=fb0c_0-l6HiTRHDke8sL-8jz9YOV-tD3Zn3wWZ2CUKxNDlc=
-      - AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=true
-      - AIRFLOW__CORE__LOAD_EXAMPLES=false
-      - AIRFLOW__API__AUTH_BACKENDS=airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session
-      - ACUMATICA_BASE_URL=https://mammoth.klearsystems.com
-      - ACUMATICA_USERNAME=mustafa.zaki
-      - ACUMATICA_PASSWORD=Dingdongbell@123
-    volumes:
-      - ./airflow/dags:/opt/airflow/dags
-      - ./airflow/logs:/opt/airflow/logs
-      - ./airflow/config:/opt/airflow/config
-      - ./airflow/plugins:/opt/airflow/plugins
-      - ./data:/opt/airflow/data
-      - ./dbt:/opt/airflow/dbt  # Add dbt volume
+    environment: *id001
+    volumes: *id002
     ports:
-      - "8080:8080"
-    user: "${AIRFLOW_UID:-50000}:0"
+    - 8080:8080
+    user: ${AIRFLOW_UID:-50000}:0
     entrypoint: /bin/bash
-    command: |
-      -c "
-      pip install dbt-core dbt-postgres
-      airflow webserver
-      "
-
+    command: "\n                -c \"\n                pip install dbt-postgres psycopg2-binary\
+      \ sqlalchemy\n                airflow webserver\n                \"\n      \
+      \      "
   airflow-scheduler:
     image: apache/airflow:2.7.3-python3.11
     depends_on:
       airflow-init:
         condition: service_completed_successfully
-    environment:
-      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
-      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://postgres:postgres@postgres/airflow
-      - AIRFLOW__CORE__FERNET_KEY=fb0c_0-l6HiTRHDke8sL-8jz9YOV-tD3Zn3wWZ2CUKxNDlc=
-      - AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=true
-      - AIRFLOW__CORE__LOAD_EXAMPLES=false
-      - AIRFLOW__API__AUTH_BACKENDS=airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session
-      - ACUMATICA_BASE_URL=https://mammoth.klearsystems.com
-      - ACUMATICA_USERNAME=mustafa.zaki
-      - ACUMATICA_PASSWORD=Dingdongbell@123
-    volumes:
-      - ./airflow/dags:/opt/airflow/dags
-      - ./airflow/logs:/opt/airflow/logs
-      - ./airflow/config:/opt/airflow/config
-      - ./airflow/plugins:/opt/airflow/plugins
-      - ./data:/opt/airflow/data
-      - ./dbt:/opt/airflow/dbt  # Add dbt volume
-    user: "${AIRFLOW_UID:-50000}:0"
+    environment: *id001
+    volumes: *id002
+    user: ${AIRFLOW_UID:-50000}:0
     entrypoint: /bin/bash
-    command: |
-      -c "
-      pip install dbt-core dbt-postgres
-      airflow scheduler
-      "
-
+    command: "\n                -c \"\n                pip install dbt-postgres psycopg2-binary\
+      \ sqlalchemy\n                airflow scheduler\n                \"\n      \
+      \      "
 volumes:
-  postgres_data:
-
-# services:
-#   postgres:
-#     image: postgres:14
-#     environment:
-#       POSTGRES_USER: postgres
-#       POSTGRES_PASSWORD: postgres
-#       POSTGRES_DB: airflow
-#     ports:
-#       - "5432:5432"
-#     volumes:
-#       - postgres_data:/var/lib/postgresql/data
-#       - ./scripts/init_databases.sql:/docker-entrypoint-initdb.d/init_databases.sql
-#     healthcheck:
-#       test: ["CMD", "pg_isready", "-U", "postgres"]
-#       interval: 5s
-#       retries: 5
-
-#   # ... rest of your services stay the same
-
-#   airflow-init:
-#     image: apache/airflow:2.7.3-python3.11
-#     depends_on:
-#       postgres:
-#         condition: service_healthy
-#     environment:
-#       - AIRFLOW__CORE__EXECUTOR=LocalExecutor
-#       - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://postgres:postgres@postgres/airflow
-#       - AIRFLOW__CORE__FERNET_KEY=fb0c_0-l6HiTRHDke8sL-8jz9YOV-tD3Zn3wWZ2CUKxNDlc=
-#       - AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=true
-#       - AIRFLOW__CORE__LOAD_EXAMPLES=false
-#       - AIRFLOW__API__AUTH_BACKENDS=airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session
-#       - ACUMATICA_BASE_URL=https://mammoth.klearsystems.com
-#       - ACUMATICA_USERNAME=mustafa.zaki
-#       - ACUMATICA_PASSWORD=Dingdongbell@123
-#     volumes:
-#       - ./airflow/dags:/opt/airflow/dags
-#       - ./airflow/logs:/opt/airflow/logs
-#       - ./airflow/config:/opt/airflow/config
-#       - ./airflow/plugins:/opt/airflow/plugins
-#       - ./data:/opt/airflow/data
-#     entrypoint: /bin/bash
-#     command: |
-#       -c "
-#       airflow db migrate
-#       airflow users create --role Admin --username admin --email admin --firstname admin --lastname admin --password admin
-#       "
-
-#   airflow-webserver:
-#     image: apache/airflow:2.7.3-python3.11
-#     depends_on:
-#       airflow-init:
-#         condition: service_completed_successfully
-#     environment:
-#       - AIRFLOW__CORE__EXECUTOR=LocalExecutor
-#       - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://postgres:postgres@postgres/airflow
-#       - AIRFLOW__CORE__FERNET_KEY=fb0c_0-l6HiTRHDke8sL-8jz9YOV-tD3Zn3wWZ2CUKxNDlc=
-#       - AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=true
-#       - AIRFLOW__CORE__LOAD_EXAMPLES=false
-#       - AIRFLOW__API__AUTH_BACKENDS=airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session
-#       - ACUMATICA_BASE_URL=https://mammoth.klearsystems.com
-#       - ACUMATICA_USERNAME=mustafa.zaki
-#       - ACUMATICA_PASSWORD=Dingdongbell@123
-#     volumes:
-#       - ./airflow/dags:/opt/airflow/dags
-#       - ./airflow/logs:/opt/airflow/logs
-#       - ./airflow/config:/opt/airflow/config
-#       - ./airflow/plugins:/opt/airflow/plugins
-#       - ./data:/opt/airflow/data
-#     ports:
-#       - "8080:8080"
-#     command: webserver
-
-#   airflow-scheduler:
-#     image: apache/airflow:2.7.3-python3.11
-#     depends_on:
-#       airflow-init:
-#         condition: service_completed_successfully
-#     environment:
-#       - AIRFLOW__CORE__EXECUTOR=LocalExecutor
-#       - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://postgres:postgres@postgres/airflow
-#       - AIRFLOW__CORE__FERNET_KEY=fb0c_0-l6HiTRHDke8sL-8jz9YOV-tD3Zn3wWZ2CUKxNDlc=
-#       - AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=true
-#       - AIRFLOW__CORE__LOAD_EXAMPLES=false
-#       - AIRFLOW__API__AUTH_BACKENDS=airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session
-#       - ACUMATICA_BASE_URL=https://mammoth.klearsystems.com
-#       - ACUMATICA_USERNAME=mustafa.zaki
-#       - ACUMATICA_PASSWORD=Dingdongbell@123
-#     volumes:
-#       - ./airflow/dags:/opt/airflow/dags
-#       - ./airflow/logs:/opt/airflow/logs
-#       - ./airflow/config:/opt/airflow/config
-#       - ./airflow/plugins:/opt/airflow/plugins
-#       - ./data:/opt/airflow/data
-#     command: scheduler
-
-# volumes:
-#   postgres_data:
+  postgres_data: null

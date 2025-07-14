@@ -38,9 +38,6 @@ def get_connection_string(warehouse_type=None):
         protocol = 'https' if conn.get('secure', True) else 'http'
         return f"clickhouse+{protocol}://{conn['user']}:{conn['password']}@{conn['host']}:{conn['port']}/{conn['database']}"
     
-    elif warehouse_type == 'bigquery':
-        return f"bigquery://{conn['project_id']}/{conn['dataset_id']}"
-    
     else:
         raise ValueError(f"Unsupported warehouse type: {warehouse_type}")
 
@@ -98,19 +95,6 @@ def get_dbt_connection_config(warehouse_type=None):
             'send_timeout': 300
         }
     
-    elif warehouse_type == 'bigquery':
-        return {
-            'type': 'bigquery',
-            'method': 'service-account',
-            'project': conn['project_id'],
-            'dataset': conn['dataset_id'],
-            'threads': 4,
-            'timeout_seconds': 300,
-            'location': conn.get('location', 'US'),
-            'priority': 'interactive',
-            'retries': 1
-        }
-    
     else:
         raise ValueError(f"Unsupported warehouse type: {warehouse_type}")
 
@@ -123,8 +107,7 @@ def get_required_packages(warehouse_type=None):
     packages = {
         'postgres': ['dbt-postgres', 'psycopg2-binary', 'sqlalchemy'],
         'snowflake': ['dbt-snowflake', 'snowflake-connector-python', 'sqlalchemy'],
-        'clickhouse': ['dbt-clickhouse', 'clickhouse-connect', 'sqlalchemy'],
-        'bigquery': ['dbt-bigquery', 'google-cloud-bigquery', 'sqlalchemy']
+        'clickhouse': ['dbt-clickhouse', 'clickhouse-connect', 'sqlalchemy']
     }
     
     return packages.get(warehouse_type, ['dbt-core'])
