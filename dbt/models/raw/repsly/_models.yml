@@ -165,6 +165,56 @@ sources:
           - name: VisitEnded
             description: Whether the visit was completed
 
+      - name: raw_daily_working_time
+        description: Daily working time data from Repsly
+        columns:
+          - name: DailyWorkingTimeID
+            description: Unique daily working time identifier
+          - name: Date
+            description: Work date in Microsoft JSON format
+          - name: DateAndTimeStart
+            description: Work start time in Microsoft JSON format
+          - name: DateAndTimeEnd
+            description: Work end time in Microsoft JSON format
+          - name: Length
+            description: Total work length in minutes
+          - name: MileageStart
+            description: Starting mileage reading
+          - name: MileageEnd
+            description: Ending mileage reading
+          - name: MileageTotal
+            description: Total mileage for the day
+          - name: LatitudeStart
+            description: GPS latitude at work start
+          - name: LongitudeStart
+            description: GPS longitude at work start
+          - name: LatitudeEnd
+            description: GPS latitude at work end
+          - name: LongitudeEnd
+            description: GPS longitude at work end
+          - name: RepresentativeCode
+            description: Code of the representative
+          - name: RepresentativeName
+            description: Name of the representative
+          - name: Note
+            description: Work day notes
+          - name: Tag
+            description: Tags for the work day
+          - name: NoOfVisits
+            description: Number of visits made
+          - name: MinOfVisits
+            description: Minimum time for visits
+          - name: MaxOfVisits
+            description: Maximum time for visits
+          - name: MinMaxVisitsTime
+            description: Min/max visit time range
+          - name: TimeAtClient
+            description: Time spent at client locations in minutes
+          - name: TimeInTravel
+            description: Time spent traveling in minutes
+          - name: TimeInPause
+            description: Time spent in pause/break in minutes
+
 models:
   - name: clients_raw
     description: Raw client data with basic filtering and renaming
@@ -344,111 +394,118 @@ models:
       - name: data_completeness_score
         description: Data completeness score (0-100)
 
-  - name: visits_raw
-    description: Raw visits data with basic filtering and renaming
+  - name: daily_working_time_raw
+    description: Raw daily working time data with basic filtering and renaming
     columns:
-      - name: visit_id
-        description: Clean visit ID
+      - name: daily_working_time_id
+        description: Clean daily working time ID
         tests:
           - not_null
           - unique
-      - name: client_code
-        description: Client code for the visit
+      - name: representative_code
+        description: Representative code
         tests:
           - not_null
-      - name: representative_code
-        description: Representative code who made the visit
       - name: representative_name
-        description: Representative name who made the visit
-      - name: explicit_check_in_raw
-        description: Raw explicit check-in flag as text
+        description: Representative name
+      - name: date_raw
+        description: Raw work date in Microsoft JSON format
       - name: date_and_time_start_raw
         description: Raw start time in Microsoft JSON format
       - name: date_and_time_end_raw
         description: Raw end time in Microsoft JSON format
+      - name: length_raw
+        description: Raw work length as text
+      - name: mileage_total_raw
+        description: Raw total mileage as text
+      - name: no_of_visits_raw
+        description: Raw number of visits as text
 
-  - name: visits
-    description: Cleaned and enhanced visits data
+  - name: daily_working_time
+    description: Cleaned and enhanced daily working time data
     columns:
-      - name: visit_id
-        description: Clean visit identifier
+      - name: daily_working_time_id
+        description: Clean daily working time identifier
         tests:
           - not_null
           - unique
-      - name: client_code
-        description: Client code for the visit
-        tests:
-          - not_null
       - name: representative_code
-        description: Representative code who made the visit
+        description: Representative code
+        tests:
+          - not_null
       - name: representative_name
-        description: Representative name who made the visit
-      - name: explicit_check_in
-        description: Whether check-in was explicit
+        description: Representative name
         tests:
           - not_null
-      - name: visit_ended
-        description: Whether the visit was completed
+      - name: work_date
+        description: Date of work
         tests:
           - not_null
-      - name: visit_start_datetime
-        description: Actual start time of visit
-      - name: visit_end_datetime
-        description: Actual end time of visit
-      - name: visit_duration_minutes
-        description: Visit duration in minutes
-      - name: visit_duration_category
-        description: Categorized visit duration
+      - name: work_start_datetime
+        description: Work start datetime
+      - name: work_end_datetime
+        description: Work end datetime
+      - name: actual_work_duration_minutes
+        description: Actual work duration in minutes
+      - name: number_of_visits
+        description: Number of client visits made
+      - name: time_at_client_minutes
+        description: Time spent at client locations in minutes
+      - name: time_in_travel_minutes
+        description: Time spent traveling in minutes
+      - name: time_in_pause_minutes
+        description: Time spent in pause/break in minutes
+      - name: mileage_total
+        description: Total mileage for the day
+      - name: client_time_percentage
+        description: Percentage of work time spent with clients
+      - name: travel_time_percentage
+        description: Percentage of work time spent traveling
+      - name: work_duration_category
+        description: Categorized work duration
         tests:
           - accepted_values:
-              values: ['Unknown Duration', 'Very Short (<5 min)', 'Short (5-15 min)', 'Medium (15-30 min)', 'Long (30-60 min)', 'Very Long (60+ min)']
-      - name: visit_time_of_day
-        description: Time of day categorization
+              values: ['No Work Time', 'Very Short (<1 hour)', 'Short (1-4 hours)', 'Standard (4-8 hours)', 'Long (8-10 hours)', 'Very Long (10+ hours)']
+      - name: start_time_category
+        description: Categorized start time
         tests:
           - accepted_values:
-              values: ['Morning', 'Afternoon', 'Evening', 'Other']
+              values: ['Unknown Start', 'Early Start (5-8 AM)', 'Morning Start (9-11 AM)', 'Afternoon Start (12-2 PM)', 'Late Start (3-5 PM)', 'Other Start Time']
+      - name: visit_productivity_category
+        description: Categorized visit productivity
+        tests:
+          - accepted_values:
+              values: ['No Visits', 'Single Visit', 'Few Visits (2-3)', 'Multiple Visits (4-6)', 'Many Visits (7+)']
+      - name: efficiency_rating
+        description: Work efficiency rating
+        tests:
+          - accepted_values:
+              values: ['High Efficiency', 'Good Efficiency', 'Moderate Efficiency', 'Low Efficiency', 'No Client Time']
+      - name: mileage_category
+        description: Categorized mileage
+        tests:
+          - accepted_values:
+              values: ['No Mileage', 'Low Mileage (<50)', 'Medium Mileage (50-150)', 'High Mileage (150-300)', 'Very High Mileage (300+)']
+      - name: work_day_type
+        description: Type of work day
+        tests:
+          - accepted_values:
+              values: ['Weekday', 'Weekend', 'Unknown']
       - name: day_of_week_name
-        description: Day of week when visit occurred
-      - name: visit_schedule_status
-        description: Whether visit was on schedule
+        description: Day of week when work occurred
+      - name: work_completion_status
+        description: Whether work day was completed
         tests:
           - accepted_values:
-              values: ['On Schedule', 'Off Schedule', 'Unknown Status']
-      - name: visit_quality
-        description: Visit quality assessment
-        tests:
-          - accepted_values:
-              values: ['High Quality', 'Good Quality', 'Basic Quality', 'Incomplete Visit', 'Poor Quality']
+              values: ['Ongoing/Incomplete', 'Completed', 'Unknown']
       - name: gps_data_quality
         description: GPS data completeness
         tests:
           - accepted_values:
-              values: ['Complete GPS', 'Partial GPS', 'No GPS']
-      - name: movement_category
-        description: Movement during visit
-        tests:
-          - accepted_values:
-              values: ['No GPS Data', 'Stationary (< 10m)', 'Minimal Movement (10-50m)', 'Some Movement (50-100m)', 'Significant Movement (100m+)']
-      - name: visit_timing_vs_plan
-        description: Actual vs planned timing
-        tests:
-          - accepted_values:
-              values: ['On Planned Date', 'Late Visit', 'Early Visit', 'Date Mismatch', 'No Date Comparison']
-      - name: territory_level_1
-        description: Top level territory
-      - name: territory_level_2
-        description: Second level territory
-      - name: state_standardized
-        description: Standardized state name
-      - name: latitude_start
-        description: GPS latitude at visit start
-      - name: longitude_start
-        description: GPS longitude at visit start
-      - name: latitude_end
-        description: GPS latitude at visit end
-      - name: longitude_end
-        description: GPS longitude at visit end
-      - name: movement_distance_meters
-        description: Distance moved during visit in meters
+              values: ['Complete GPS', 'Partial GPS (Start Only)', 'Partial GPS (End Only)', 'No GPS']
+      - name: minutes_per_visit
+        description: Average minutes per visit
+      - name: mileage_per_visit
+        description: Average mileage per visit
       - name: data_completeness_score
         description: Data completeness score (0-100)

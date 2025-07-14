@@ -75,6 +75,14 @@ ENDPOINTS = {
         'data_field': 'Visits',
         'total_count_field': 'TotalCount'
     },
+    'daily_working_time': {
+        'path': 'export/dailyworkingtime',
+        'pagination_type': 'id',
+        'limit': 50,
+        'id_field': 'LastDailyWorkingTimeID',
+        'data_field': 'DailyWorkingTime',
+        'total_count_field': 'TotalCount'
+    },
     'products': {
         'path': 'export/products',
         'pagination_type': 'id',
@@ -444,9 +452,11 @@ def run_dbt_transformations(**context):
             'dbt run --select clients',
             'dbt run --select client_notes_raw',
             'dbt run --select client_notes',
+            'dbt run --select daily_working_time_raw',
+            'dbt run --select daily_working_time',
             # Add more as you create them:
-            'dbt run --select visits_raw',
-            'dbt run --select visits',
+            # 'dbt run --select visits_raw',
+            # 'dbt run --select visits',
             # 'dbt run --select products_raw',
             # 'dbt run --select products',
         ]
@@ -537,6 +547,31 @@ def check_transformed_data(**context):
                 print("✅ Data transformation successful!")
             else:
                 raise Exception("No data found in client_notes table")
+
+        # Check daily working time data
+        print("\n📊 Checking daily working time data...")
+        with engine.connect() as conn:
+            result = conn.execute("""
+                SELECT 
+                    COUNT(*) as total_work_days,
+                    COUNT(DISTINCT representative_code) as unique_reps,
+                    AVG(actual_work_duration_minutes) as avg_work_duration,
+                    AVG(number_of_visits) as avg_visits_per_day,
+                    AVG(client_time_percentage) as avg_client_time_pct,
+                    COUNT(CASE WHEN efficiency_rating = 'High Efficiency' THEN 1 END) as high_efficiency_days,
+                    AVG(mileage_total) as avg_daily_mileage
+                FROM public.daily_working_time
+            """)
+            
+            row = result.fetchone()
+            print(f"📊 Daily Working Time Data Quality:")
+            print(f"   Total work days: {row[0]}")
+            print(f"   Unique representatives: {row[1]}")
+            print(f"   Average work duration: {row[2]:.1f} minutes" if row[2] else "N/A")
+            print(f"   Average visits per day: {row[3]:.1f}" if row[3] else "N/A")
+            print(f"   Average client time: {row[4]:.1f}%" if row[4] else "N/A")
+            print(f"   High efficiency days: {row[5]}")
+            print(f"   Average daily mileage: {row[6]:.1f}" if row[6] else "N/A")
 
         # Add more data quality checks here as you add models...
         
