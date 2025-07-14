@@ -458,8 +458,10 @@ def run_dbt_transformations(**context):
         
         # Run models one by one with better error handling
         commands = [
-            'dbt run --select customers_raw', 
-            'dbt run --select customers'
+            'dbt run --select customers_raw',
+            'dbt run --select sales_invoices_raw',  # Add this line
+            'dbt run --select customers',
+            'dbt run --select sales_invoices'       # Add this line
         ]
         
         for cmd in commands:
@@ -561,7 +563,8 @@ def check_transformed_data(**context):
         engine = create_engine(connection_string)
         
         with engine.connect() as conn:
-            # Check if curated customers table exists and has data
+            # Check customers table
+            print("📊 Checking customers data...")
             result = conn.execute("""
                 SELECT 
                     COUNT(*) as total_customers,
@@ -572,17 +575,42 @@ def check_transformed_data(**context):
             """)
             
             row = result.fetchone()
-            
-            print(f"📊 Data Quality Results:")
+            print(f"📊 Customer Data Quality:")
             print(f"   Total customers: {row[0]}")
             print(f"   Unique customer IDs: {row[1]}")
             print(f"   Customers with email: {row[2]}")
             print(f"   Average credit limit: ${row[3]:.2f}" if row[3] else "N/A")
             
+            # Check sales invoices table
+            print("\n📊 Checking sales invoices data...")
+            result = conn.execute("""
+                SELECT 
+                    COUNT(*) as total_invoices,
+                    COUNT(DISTINCT invoice_number) as unique_invoices,
+                    COUNT(DISTINCT customer_id) as customers_with_invoices,
+                    SUM(amount) as total_revenue,
+                    AVG(amount) as avg_invoice_amount,
+                    COUNT(CASE WHEN invoice_category = 'Regular Invoice' THEN 1 END) as regular_invoices,
+                    COUNT(CASE WHEN invoice_category = 'Credit Memo' THEN 1 END) as credit_memos,
+                    SUM(outstanding_balance) as total_outstanding
+                FROM public.sales_invoices
+            """)
+            
+            row = result.fetchone()
+            print(f"📊 Sales Invoices Data Quality:")
+            print(f"   Total invoices: {row[0]}")
+            print(f"   Unique invoice numbers: {row[1]}")
+            print(f"   Customers with invoices: {row[2]}")
+            print(f"   Total revenue: ${row[3]:,.2f}" if row[3] else "N/A")
+            print(f"   Average invoice amount: ${row[4]:.2f}" if row[4] else "N/A")
+            print(f"   Regular invoices: {row[5]}")
+            print(f"   Credit memos: {row[6]}")
+            print(f"   Total outstanding: ${row[7]:,.2f}" if row[7] else "N/A")
+            
             if row[0] > 0:
                 print("✅ Data transformation successful!")
             else:
-                raise Exception("No data found in customers table")
+                raise Exception("No data found in sales_invoices table")
         
         engine.dispose()
         
