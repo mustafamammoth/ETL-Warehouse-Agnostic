@@ -1,0 +1,454 @@
+version: 2
+
+sources:
+  - name: repsly_raw
+    description: Raw data extracted from Repsly API
+    schema: repsly  # tells dbt to look in repsly schema
+    tables:
+      - name: raw_clients
+        description: Client master data from Repsly
+        columns:
+          - name: ClientID
+            description: Unique client identifier
+          - name: TimeStamp
+            description: Client timestamp for incremental updates
+          - name: Code
+            description: Unique client code
+          - name: Name
+            description: Client business name
+          - name: Active
+            description: Marks a client active or inactive
+          - name: Tag
+            description: Tags associated with this client
+          - name: Territory
+            description: Territory hierarchy assignment
+          - name: RepresentativeCode
+            description: Unique representative code
+          - name: RepresentativeName
+            description: Representative name
+          - name: StreetAddress
+            description: Client street address
+          - name: ZIP
+            description: Client ZIP code
+          - name: ZIPExt
+            description: Client ZIP extension
+          - name: City
+            description: Client city
+          - name: State
+            description: Client state
+          - name: Country
+            description: Client country
+          - name: Email
+            description: Client email address
+          - name: Phone
+            description: Client phone number
+          - name: Mobile
+            description: Client mobile phone number
+          - name: Website
+            description: Client website
+          - name: ContactName
+            description: Contact person name
+          - name: ContactTitle
+            description: Contact person title
+          - name: Note
+            description: Additional client note
+          - name: Status
+            description: Client status name in sales cycle
+          - name: CustomFields
+            description: Custom fields as JSON
+          - name: PriceLists
+            description: Price list names as JSON
+          - name: GPSLongitude
+            description: GPS longitude coordinate
+          - name: GPSLatitude
+            description: GPS latitude coordinate
+          - name: AccountCode
+            description: Code of the account assigned to this client
+
+      - name: raw_client_notes
+        description: Client notes data from Repsly
+        columns:
+          - name: ClientNoteID
+            description: Unique client note identifier
+          - name: TimeStamp
+            description: Note timestamp for incremental updates
+          - name: DateAndTime
+            description: Microsoft JSON date format of when note was created
+          - name: RepresentativeCode
+            description: Code of representative who wrote the note
+          - name: RepresentativeName
+            description: Name of representative who wrote the note
+          - name: ClientCode
+            description: Client code this note belongs to
+          - name: ClientName
+            description: Client name this note belongs to
+          - name: StreetAddress
+            description: Client address at time of note
+          - name: ZIP
+            description: Client ZIP code
+          - name: ZIPExt
+            description: Client ZIP extension
+          - name: City
+            description: Client city
+          - name: State
+            description: Client state
+          - name: Country
+            description: Client country
+          - name: Email
+            description: Client email
+          - name: Phone
+            description: Client phone
+          - name: Mobile
+            description: Client mobile
+          - name: Territory
+            description: Territory hierarchy
+          - name: Longitude
+            description: GPS longitude where note was taken
+          - name: Latitude
+            description: GPS latitude where note was taken
+          - name: Note
+            description: The actual note content
+          - name: VisitID
+            description: ID of visit this note belongs to
+
+      - name: raw_visits
+        description: Visits data from Repsly
+        columns:
+          - name: VisitID
+            description: Unique visit identifier
+          - name: TimeStamp
+            description: Visit timestamp for incremental updates
+          - name: Date
+            description: Planned visit date in Microsoft JSON format
+          - name: RepresentativeCode
+            description: Code of representative who made the visit
+          - name: RepresentativeName
+            description: Name of representative who made the visit
+          - name: ExplicitCheckIn
+            description: Whether check-in was explicit
+          - name: DateAndTimeStart
+            description: Actual start time of visit in Microsoft JSON format
+          - name: DateAndTimeEnd
+            description: Actual end time of visit in Microsoft JSON format
+          - name: ClientCode
+            description: Client code for the visit
+          - name: ClientName
+            description: Client name for the visit
+          - name: StreetAddress
+            description: Client address
+          - name: ZIP
+            description: Client ZIP code
+          - name: ZIPExt
+            description: Client ZIP extension
+          - name: City
+            description: Client city
+          - name: State
+            description: Client state
+          - name: Country
+            description: Client country
+          - name: Territory
+            description: Territory hierarchy
+          - name: LatitudeStart
+            description: GPS latitude at visit start
+          - name: LongitudeStart
+            description: GPS longitude at visit start
+          - name: LatitudeEnd
+            description: GPS latitude at visit end
+          - name: LongitudeEnd
+            description: GPS longitude at visit end
+          - name: PrecisionStart
+            description: GPS precision at visit start
+          - name: PrecisionEnd
+            description: GPS precision at visit end
+          - name: VisitStatusBySchedule
+            description: Visit status compared to schedule
+          - name: VisitEnded
+            description: Whether the visit was completed
+
+models:
+  - name: clients_raw
+    description: Raw client data with basic filtering and renaming
+    columns:
+      - name: client_id
+        description: Clean client ID
+        tests:
+          - not_null
+          - unique
+      - name: code
+        description: Unique client code
+        tests:
+          - not_null
+      - name: name
+        description: Client business name
+        tests:
+          - not_null
+      - name: active_raw
+        description: Raw active flag as text
+      - name: representative_code
+        description: Representative code
+      - name: representative_name
+        description: Representative name
+      - name: email
+        description: Client email address
+      - name: phone
+        description: Client phone number
+      - name: gps_longitude_raw
+        description: Raw GPS longitude as text
+      - name: gps_latitude_raw
+        description: Raw GPS latitude as text
+
+  - name: clients
+    description: Cleaned and enhanced client data
+    columns:
+      - name: client_id
+        description: Clean client identifier
+        tests:
+          - not_null
+          - unique
+      - name: code
+        description: Unique client code
+        tests:
+          - not_null
+          - unique
+      - name: name
+        description: Cleaned client name
+        tests:
+          - not_null
+      - name: is_active
+        description: Active status as boolean
+        tests:
+          - not_null
+      - name: representative_code
+        description: Representative code
+      - name: representative_name
+        description: Representative name
+      - name: full_address
+        description: Concatenated full address
+      - name: email_clean
+        description: Cleaned and validated email
+      - name: phone_clean
+        description: Cleaned phone number
+      - name: gps_longitude
+        description: GPS longitude as decimal
+      - name: gps_latitude
+        description: GPS latitude as decimal
+      - name: client_tier
+        description: Client tier classification
+        tests:
+          - accepted_values:
+              values: ['Enterprise', 'Premium', 'Standard', 'Basic', 'Unknown']
+      - name: territory_level_1
+        description: Top level territory
+      - name: territory_level_2
+        description: Second level territory
+      - name: address_quality
+        description: Address completeness assessment
+        tests:
+          - accepted_values:
+              values: ['Complete', 'Partial', 'Minimal', 'Missing']
+      - name: contact_quality
+        description: Contact information quality
+        tests:
+          - accepted_values:
+              values: ['Excellent', 'Good', 'Fair', 'Poor']
+      - name: data_quality_flag
+        description: Overall data quality assessment
+        tests:
+          - accepted_values:
+              values: ['High Quality', 'Good Quality', 'Needs Improvement', 'Poor Quality']
+
+  - name: client_notes_raw
+    description: Raw client notes data with basic filtering and renaming
+    columns:
+      - name: client_note_id
+        description: Clean client note ID
+        tests:
+          - not_null
+          - unique
+      - name: client_code
+        description: Client code this note belongs to
+        tests:
+          - not_null
+      - name: representative_code
+        description: Representative code who wrote the note
+      - name: representative_name
+        description: Representative name who wrote the note
+      - name: note
+        description: The actual note content
+      - name: visit_id
+        description: Associated visit ID
+      - name: date_and_time_raw
+        description: Raw Microsoft JSON date format
+
+  - name: client_notes
+    description: Cleaned and enhanced client notes data
+    columns:
+      - name: client_note_id
+        description: Clean client note identifier
+        tests:
+          - not_null
+          - unique
+      - name: client_code
+        description: Client code this note belongs to
+        tests:
+          - not_null
+      - name: representative_code
+        description: Representative code who wrote the note
+      - name: representative_name
+        description: Representative name who wrote the note
+      - name: note_cleaned
+        description: Cleaned note content
+      - name: note_datetime
+        description: Parsed datetime when note was created
+        tests:
+          - not_null
+      - name: note_date
+        description: Date when note was created
+        tests:
+          - not_null
+      - name: note_category
+        description: Categorized note type
+        tests:
+          - accepted_values:
+              values: ['Inventory Issue', 'Ordering', 'Promotion', 'Display/Demo', 'Staff Interaction', 'Availability', 'Training', 'Product Discussion', 'General']
+      - name: note_sentiment
+        description: Basic sentiment analysis
+        tests:
+          - accepted_values:
+              values: ['Positive', 'Negative', 'Neutral']
+      - name: business_priority
+        description: Business priority level
+        tests:
+          - accepted_values:
+              values: ['High', 'Medium', 'Low']
+      - name: note_quality
+        description: Note quality assessment
+        tests:
+          - accepted_values:
+              values: ['Detailed', 'Adequate', 'Brief', 'Minimal', 'Empty']
+      - name: time_of_day
+        description: Time of day categorization
+        tests:
+          - accepted_values:
+              values: ['Morning', 'Afternoon', 'Evening', 'Other']
+      - name: day_of_week_name
+        description: Day of week when note was written
+      - name: territory_level_1
+        description: Top level territory
+      - name: territory_level_2
+        description: Second level territory
+      - name: state_standardized
+        description: Standardized state name
+      - name: note_length
+        description: Length of note in characters
+      - name: data_completeness_score
+        description: Data completeness score (0-100)
+
+  - name: visits_raw
+    description: Raw visits data with basic filtering and renaming
+    columns:
+      - name: visit_id
+        description: Clean visit ID
+        tests:
+          - not_null
+          - unique
+      - name: client_code
+        description: Client code for the visit
+        tests:
+          - not_null
+      - name: representative_code
+        description: Representative code who made the visit
+      - name: representative_name
+        description: Representative name who made the visit
+      - name: explicit_check_in_raw
+        description: Raw explicit check-in flag as text
+      - name: date_and_time_start_raw
+        description: Raw start time in Microsoft JSON format
+      - name: date_and_time_end_raw
+        description: Raw end time in Microsoft JSON format
+
+  - name: visits
+    description: Cleaned and enhanced visits data
+    columns:
+      - name: visit_id
+        description: Clean visit identifier
+        tests:
+          - not_null
+          - unique
+      - name: client_code
+        description: Client code for the visit
+        tests:
+          - not_null
+      - name: representative_code
+        description: Representative code who made the visit
+      - name: representative_name
+        description: Representative name who made the visit
+      - name: explicit_check_in
+        description: Whether check-in was explicit
+        tests:
+          - not_null
+      - name: visit_ended
+        description: Whether the visit was completed
+        tests:
+          - not_null
+      - name: visit_start_datetime
+        description: Actual start time of visit
+      - name: visit_end_datetime
+        description: Actual end time of visit
+      - name: visit_duration_minutes
+        description: Visit duration in minutes
+      - name: visit_duration_category
+        description: Categorized visit duration
+        tests:
+          - accepted_values:
+              values: ['Unknown Duration', 'Very Short (<5 min)', 'Short (5-15 min)', 'Medium (15-30 min)', 'Long (30-60 min)', 'Very Long (60+ min)']
+      - name: visit_time_of_day
+        description: Time of day categorization
+        tests:
+          - accepted_values:
+              values: ['Morning', 'Afternoon', 'Evening', 'Other']
+      - name: day_of_week_name
+        description: Day of week when visit occurred
+      - name: visit_schedule_status
+        description: Whether visit was on schedule
+        tests:
+          - accepted_values:
+              values: ['On Schedule', 'Off Schedule', 'Unknown Status']
+      - name: visit_quality
+        description: Visit quality assessment
+        tests:
+          - accepted_values:
+              values: ['High Quality', 'Good Quality', 'Basic Quality', 'Incomplete Visit', 'Poor Quality']
+      - name: gps_data_quality
+        description: GPS data completeness
+        tests:
+          - accepted_values:
+              values: ['Complete GPS', 'Partial GPS', 'No GPS']
+      - name: movement_category
+        description: Movement during visit
+        tests:
+          - accepted_values:
+              values: ['No GPS Data', 'Stationary (< 10m)', 'Minimal Movement (10-50m)', 'Some Movement (50-100m)', 'Significant Movement (100m+)']
+      - name: visit_timing_vs_plan
+        description: Actual vs planned timing
+        tests:
+          - accepted_values:
+              values: ['On Planned Date', 'Late Visit', 'Early Visit', 'Date Mismatch', 'No Date Comparison']
+      - name: territory_level_1
+        description: Top level territory
+      - name: territory_level_2
+        description: Second level territory
+      - name: state_standardized
+        description: Standardized state name
+      - name: latitude_start
+        description: GPS latitude at visit start
+      - name: longitude_start
+        description: GPS longitude at visit start
+      - name: latitude_end
+        description: GPS latitude at visit end
+      - name: longitude_end
+        description: GPS longitude at visit end
+      - name: movement_distance_meters
+        description: Distance moved during visit in meters
+      - name: data_completeness_score
+        description: Data completeness score (0-100)

@@ -1,79 +1,107 @@
+version: '3.8'
+
 services:
   postgres:
     image: postgres:14
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: airflow
-    ports:
-    - 5432:5432
+      POSTGRES_USER: ${DATABASE_USER}
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD}
+      POSTGRES_DB: ${DATABASE_NAME}
     volumes:
-    - postgres_data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "${DATABASE_PORT}:5432"
     healthcheck:
-      test:
-      - CMD
-      - pg_isready
-      - -U
-      - postgres
+      test: ['CMD', 'pg_isready', '-U', '${DATABASE_USER}']
       interval: 5s
       retries: 5
+
   airflow-init:
     image: apache/airflow:2.7.3-python3.11
     depends_on:
       postgres:
         condition: service_healthy
-    environment: &id001
-    - AIRFLOW__CORE__EXECUTOR=LocalExecutor
-    - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://postgres:postgres@postgres/airflow
-    - AIRFLOW__CORE__FERNET_KEY=fb0c_0-l6HiTRHDke8sL-8jz9YOV-tD3Zn3wWZ2CUKxNDlc=
-    - AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=true
-    - AIRFLOW__CORE__LOAD_EXAMPLES=false
-    - AIRFLOW__API__AUTH_BACKENDS=airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session
-    - ACUMATICA_BASE_URL=https://mammoth.klearsystems.com
-    - ACUMATICA_USERNAME=mustafa.zaki
-    - ACUMATICA_PASSWORD=Dingdongbell@123
-    - ACTIVE_WAREHOUSE=postgres
-    volumes: &id002
-    - ./airflow/dags:/opt/airflow/dags
-    - ./airflow/logs:/opt/airflow/logs
-    - ./airflow/config:/opt/airflow/config
-    - ./airflow/plugins:/opt/airflow/plugins
-    - ./data:/opt/airflow/data
-    - ./dbt:/opt/airflow/dbt
-    - ./config:/opt/airflow/config
-    - ./scripts:/opt/airflow/scripts
-    user: ${AIRFLOW_UID:-50000}:0
+    environment: &airflow_common_env
+      - AIRFLOW__CORE__EXECUTOR=${AIRFLOW__CORE__EXECUTOR}
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://${DATABASE_USER}:${DATABASE_PASSWORD}@postgres/${DATABASE_NAME}
+      - AIRFLOW__CORE__FERNET_KEY=${AIRFLOW__CORE__FERNET_KEY}
+      - AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=true
+      - AIRFLOW__CORE__LOAD_EXAMPLES=false
+      - AIRFLOW__API__AUTH_BACKENDS=airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session
+      - ACUMATICA_BASE_URL=${ACUMATICA_BASE_URL}
+      - ACUMATICA_USERNAME=${ACUMATICA_USERNAME}
+      - ACUMATICA_PASSWORD=${ACUMATICA_PASSWORD}
+      - ACUMATICA_COMPANY=${ACUMATICA_COMPANY}
+      - ACUMATICA_BRANCH=${ACUMATICA_BRANCH}
+      - REPSLY_BASE_URL=${REPSLY_BASE_URL}
+      - REPSLY_USERNAME=${REPSLY_USERNAME}
+      - REPSLY_PASSWORD=${REPSLY_PASSWORD}
+      - ACTIVE_WAREHOUSE=postgres
+      - DATABASE_HOST=${DATABASE_HOST}
+      - DATABASE_PORT=${DATABASE_PORT}
+      - DATABASE_NAME=${DATABASE_NAME}
+      - DATABASE_USER=${DATABASE_USER}
+      - DATABASE_PASSWORD=${DATABASE_PASSWORD}
+      - SNOWFLAKE_ACCOUNT=${SNOWFLAKE_ACCOUNT}
+      - SNOWFLAKE_USER=${SNOWFLAKE_USER}
+      - SNOWFLAKE_PASSWORD=${SNOWFLAKE_PASSWORD}
+      - SNOWFLAKE_WAREHOUSE=${SNOWFLAKE_WAREHOUSE}
+      - SNOWFLAKE_DATABASE=${SNOWFLAKE_DATABASE}
+      - CLICKHOUSE_HOST=${CLICKHOUSE_HOST}
+      - CLICKHOUSE_PORT=${CLICKHOUSE_PORT}
+      - CLICKHOUSE_DATABASE=${CLICKHOUSE_DATABASE}
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
+    volumes: &airflow_common_volumes
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ./airflow/config:/opt/airflow/config
+      - ./airflow/plugins:/opt/airflow/plugins
+      - ./data:/opt/airflow/data
+      - ./dbt:/opt/airflow/dbt
+      - ./config:/opt/airflow/config
+      - ./scripts:/opt/airflow/scripts
+    user: "${AIRFLOW_UID:-50000}:0"
     entrypoint: /bin/bash
-    command: "\n                -c \"\n                pip install dbt-postgres psycopg2-binary\
-      \ sqlalchemy\n                python /opt/airflow/scripts/generate_dbt_profiles.py\n\
-      \                airflow db migrate\n                airflow users create --role\
-      \ Admin --username admin --email admin --firstname admin --lastname admin --password\
-      \ admin\n                \"\n            "
+    command: |
+      -c "
+      pip install dbt-postgres psycopg2-binary sqlalchemy
+      python /opt/airflow/scripts/generate_dbt_profiles.py
+      airflow db migrate
+      airflow users create --role Admin --username admin --email admin --firstname admin --lastname admin --password admin
+      "
+
   airflow-webserver:
     image: apache/airflow:2.7.3-python3.11
     depends_on:
       airflow-init:
         condition: service_completed_successfully
-    environment: *id001
-    volumes: *id002
+    environment: *airflow_common_env
+    volumes: *airflow_common_volumes
     ports:
-    - 8080:8080
-    user: ${AIRFLOW_UID:-50000}:0
+      - "8080:8080"
+    user: "${AIRFLOW_UID:-50000}:0"
     entrypoint: /bin/bash
-    command: "\n                -c \"\n                pip install dbt-postgres psycopg2-binary\
-      \ sqlalchemy\n                airflow webserver\n                \"\n      \
-      \      "
+    command: |
+      -c "
+      pip install dbt-postgres psycopg2-binary sqlalchemy
+      airflow webserver
+      "
+
   airflow-scheduler:
     image: apache/airflow:2.7.3-python3.11
     depends_on:
       airflow-init:
         condition: service_completed_successfully
-    environment: *id001
-    volumes: *id002
-    user: ${AIRFLOW_UID:-50000}:0
+    environment: *airflow_common_env
+    volumes: *airflow_common_volumes
+    user: "${AIRFLOW_UID:-50000}:0"
     entrypoint: /bin/bash
-    command: "\n                -c \"\n                pip install dbt-postgres psycopg2-binary\
-      \ sqlalchemy\n                airflow scheduler\n                \"\n      \
-      \      "
+    command: |
+      -c "
+      pip install dbt-postgres psycopg2-binary sqlalchemy
+      airflow scheduler
+      "
+
 volumes:
-  postgres_data: null
+  postgres_data:

@@ -17,18 +17,42 @@ def generate_docker_compose():
         config = load_warehouse_config(warehouse)
         packages = get_required_packages(warehouse)
         
-        # Base environment variables
+        # Base environment variables - using environment variable substitution
         base_env = [
-            'AIRFLOW__CORE__EXECUTOR=LocalExecutor',
-            f'AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://postgres:postgres@postgres/airflow',
-            'AIRFLOW__CORE__FERNET_KEY=fb0c_0-l6HiTRHDke8sL-8jz9YOV-tD3Zn3wWZ2CUKxNDlc=',
+            'AIRFLOW__CORE__EXECUTOR=${AIRFLOW__CORE__EXECUTOR}',
+            'AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://${DATABASE_USER}:${DATABASE_PASSWORD}@postgres/${DATABASE_NAME}',
+            'AIRFLOW__CORE__FERNET_KEY=${AIRFLOW__CORE__FERNET_KEY}',
             'AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=true',
             'AIRFLOW__CORE__LOAD_EXAMPLES=false',
             'AIRFLOW__API__AUTH_BACKENDS=airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session',
-            'ACUMATICA_BASE_URL=https://mammoth.klearsystems.com',
-            'ACUMATICA_USERNAME=mustafa.zaki',
-            'ACUMATICA_PASSWORD=Dingdongbell@123',
-            f'ACTIVE_WAREHOUSE={warehouse}'
+            # Acumatica Configuration
+            'ACUMATICA_BASE_URL=${ACUMATICA_BASE_URL}',
+            'ACUMATICA_USERNAME=${ACUMATICA_USERNAME}',
+            'ACUMATICA_PASSWORD=${ACUMATICA_PASSWORD}',
+            'ACUMATICA_COMPANY=${ACUMATICA_COMPANY}',
+            'ACUMATICA_BRANCH=${ACUMATICA_BRANCH}',
+            # Repsly Configuration
+            'REPSLY_BASE_URL=${REPSLY_BASE_URL}',
+            'REPSLY_USERNAME=${REPSLY_USERNAME}',
+            'REPSLY_PASSWORD=${REPSLY_PASSWORD}',
+            # Warehouse Configuration
+            f'ACTIVE_WAREHOUSE={warehouse}',
+            'DATABASE_HOST=${DATABASE_HOST}',
+            'DATABASE_PORT=${DATABASE_PORT}',
+            'DATABASE_NAME=${DATABASE_NAME}',
+            'DATABASE_USER=${DATABASE_USER}',
+            'DATABASE_PASSWORD=${DATABASE_PASSWORD}',
+            # Future warehouse configs
+            'SNOWFLAKE_ACCOUNT=${SNOWFLAKE_ACCOUNT}',
+            'SNOWFLAKE_USER=${SNOWFLAKE_USER}',
+            'SNOWFLAKE_PASSWORD=${SNOWFLAKE_PASSWORD}',
+            'SNOWFLAKE_WAREHOUSE=${SNOWFLAKE_WAREHOUSE}',
+            'SNOWFLAKE_DATABASE=${SNOWFLAKE_DATABASE}',
+            'CLICKHOUSE_HOST=${CLICKHOUSE_HOST}',
+            'CLICKHOUSE_PORT=${CLICKHOUSE_PORT}',
+            'CLICKHOUSE_DATABASE=${CLICKHOUSE_DATABASE}',
+            'CLICKHOUSE_USER=${CLICKHOUSE_USER}',
+            'CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}'
         ]
         
         # Base volumes
@@ -53,14 +77,14 @@ def generate_docker_compose():
         services['postgres'] = {
             'image': 'postgres:14',
             'environment': {
-                'POSTGRES_USER': 'postgres',
-                'POSTGRES_PASSWORD': 'postgres',
-                'POSTGRES_DB': 'airflow'
+                'POSTGRES_USER': '${DATABASE_USER}',
+                'POSTGRES_PASSWORD': '${DATABASE_PASSWORD}',
+                'POSTGRES_DB': '${DATABASE_NAME}'
             },
-            'ports': ['5432:5432'],
+            'ports': ['${DATABASE_PORT}:5432'],
             'volumes': ['postgres_data:/var/lib/postgresql/data'],
             'healthcheck': {
-                'test': ['CMD', 'pg_isready', '-U', 'postgres'],
+                'test': ['CMD', 'pg_isready', '-U', '${DATABASE_USER}'],
                 'interval': '5s',
                 'retries': 5
             }
@@ -70,10 +94,10 @@ def generate_docker_compose():
         if warehouse == 'clickhouse':
             services['clickhouse'] = {
                 'image': 'clickhouse/clickhouse-server:latest',
-                'ports': ['8123:8123', '9000:9000', '9440:9440'],
+                'ports': ['${CLICKHOUSE_PORT:-8123}:8123', '9000:9000', '9440:9440'],
                 'environment': {
-                    'CLICKHOUSE_DB': 'analytics_db',
-                    'CLICKHOUSE_USER': 'default',
+                    'CLICKHOUSE_DB': '${CLICKHOUSE_DATABASE}',
+                    'CLICKHOUSE_USER': '${CLICKHOUSE_USER}',
                     'CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT': '1'
                 },
                 'volumes': ['clickhouse_data:/var/lib/clickhouse'],
@@ -85,12 +109,15 @@ def generate_docker_compose():
                 }
             }
         
+        # Determine dependencies based on warehouse
+        dependencies = {'postgres': {'condition': 'service_healthy'}}
+        if warehouse == 'clickhouse':
+            dependencies['clickhouse'] = {'condition': 'service_healthy'}
+        
         # Airflow Init Service
         services['airflow-init'] = {
             'image': 'apache/airflow:2.7.3-python3.11',
-            'depends_on': {
-                'postgres': {'condition': 'service_healthy'}
-            },
+            'depends_on': dependencies,
             'environment': base_env,
             'volumes': base_volumes,
             'user': '${AIRFLOW_UID:-50000}:0',
@@ -143,25 +170,114 @@ def generate_docker_compose():
         }
         
         # Create volumes list
-        volumes = ['postgres_data:']
+        volumes = ['postgres_data']
         if warehouse == 'clickhouse':
-            volumes.append('clickhouse_data:')
+            volumes.append('clickhouse_data')
         
-        # Final docker-compose structure
+        # Final docker-compose structure with proper YAML formatting
         docker_compose = {
+            'version': '3.8',
             'services': services,
-            'volumes': {vol.rstrip(':'): None for vol in volumes}
+            'volumes': {vol: None for vol in volumes}
         }
         
-        # Write docker-compose.yml
+        # Write docker-compose.yml with proper YAML formatting
         compose_path = Path(__file__).parent.parent / 'docker-compose.yml'
         with open(compose_path, 'w') as f:
-            yaml.dump(docker_compose, f, default_flow_style=False, indent=2, sort_keys=False)
+            # Custom YAML formatting to match your existing style
+            f.write("version: '3.8'\n\n")
+            f.write("services:\n")
+            
+            for service_name, service_config in services.items():
+                f.write(f"  {service_name}:\n")
+                
+                # Write image
+                f.write(f"    image: {service_config['image']}\n")
+                
+                # Write depends_on if exists
+                if 'depends_on' in service_config:
+                    f.write("    depends_on:\n")
+                    for dep, condition in service_config['depends_on'].items():
+                        f.write(f"      {dep}:\n")
+                        if isinstance(condition, dict):
+                            for k, v in condition.items():
+                                f.write(f"        {k}: {v}\n")
+                
+                # Write environment with proper anchoring for reuse
+                if 'environment' in service_config:
+                    if service_name == 'airflow-init':
+                        f.write("    environment: &airflow_common_env\n")
+                    elif service_name in ['airflow-webserver', 'airflow-scheduler']:
+                        f.write("    environment: *airflow_common_env\n")
+                    else:
+                        f.write("    environment:\n")
+                    
+                    if service_name == 'airflow-init' or service_name == 'postgres' or service_name == 'clickhouse':
+                        env_vars = service_config['environment']
+                        if isinstance(env_vars, list):
+                            for env_var in env_vars:
+                                f.write(f"      - {env_var}\n")
+                        else:
+                            for key, value in env_vars.items():
+                                f.write(f"      {key}: {value}\n")
+                
+                # Write volumes with proper anchoring for reuse
+                if 'volumes' in service_config:
+                    if service_name == 'airflow-init':
+                        f.write("    volumes: &airflow_common_volumes\n")
+                    elif service_name in ['airflow-webserver', 'airflow-scheduler']:
+                        f.write("    volumes: *airflow_common_volumes\n")
+                    else:
+                        f.write("    volumes:\n")
+                    
+                    if service_name == 'airflow-init' or service_name == 'postgres' or service_name == 'clickhouse':
+                        for volume in service_config['volumes']:
+                            f.write(f"      - {volume}\n")
+                
+                # Write ports
+                if 'ports' in service_config:
+                    f.write("    ports:\n")
+                    for port in service_config['ports']:
+                        f.write(f"      - \"{port}\"\n")
+                
+                # Write user
+                if 'user' in service_config:
+                    f.write(f"    user: \"{service_config['user']}\"\n")
+                
+                # Write entrypoint
+                if 'entrypoint' in service_config:
+                    f.write(f"    entrypoint: {service_config['entrypoint']}\n")
+                
+                # Write command with proper multiline formatting
+                if 'command' in service_config:
+                    command = service_config['command'].strip()
+                    f.write("    command: |\n")
+                    for line in command.split('\n'):
+                        if line.strip():
+                            f.write(f"      {line.strip()}\n")
+                
+                # Write healthcheck
+                if 'healthcheck' in service_config:
+                    f.write("    healthcheck:\n")
+                    hc = service_config['healthcheck']
+                    f.write(f"      test: {hc['test']}\n")
+                    f.write(f"      interval: {hc['interval']}\n")
+                    f.write(f"      retries: {hc['retries']}\n")
+                    if 'timeout' in hc:
+                        f.write(f"      timeout: {hc['timeout']}\n")
+                
+                f.write("\n")
+            
+            # Write volumes
+            f.write("volumes:\n")
+            for volume in volumes:
+                f.write(f"  {volume}:\n")
         
         print(f"✅ Generated {compose_path} for {warehouse}")
         print(f"   Warehouse: {config['warehouse']['name']}")
         print(f"   Services: {list(services.keys())}")
         print(f"   Packages: {packages}")
+        print(f"   🔐 Using environment variables for credentials")
         
         return True
         

@@ -1,4 +1,4 @@
--- Cleaned and standardized customer data (PostgreSQL compatible)
+-- Cleaned and standardized customer data (PostgreSQL compatible) models/curated/acumatica/customers.sql
 {{ config(materialized='table') }}
 
 WITH customer_cleaning AS (
