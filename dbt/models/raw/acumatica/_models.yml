@@ -1,0 +1,36 @@
+version: 2
+
+sources:
+  - name: acumatica_raw
+    description: Raw data extracted from Acumatica API
+    schema: public  # Add this line - tells dbt to look in public schema
+    tables:
+      - name: raw_customers  # This matches what your DAG creates
+        description: Customer master data from Acumatica
+        columns:
+          - name: id
+            description: Unique customer identifier (GUID)
+          - name: CustomerID
+            description: Customer business ID (e.g., C000001)
+          - name: CustomerName
+            description: Customer business name
+          - name: Email
+            description: Customer email addresses (may contain multiple)
+          - name: CreditLimit
+            description: Customer credit limit amount
+          - name: Status
+            description: Customer status (Active/Inactive)
+          - name: CreatedDateTime
+            description: When customer was created
+          - name: LastModifiedDateTime
+            description: When customer was last updated
+
+models:
+  - name: raw_customers
+    description: Raw customer data with basic filtering
+    columns:
+      - name: customer_id
+        description: Clean customer ID
+        tests:
+          - not_null
+          - unique

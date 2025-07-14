@@ -1,0 +1,25 @@
+warehouse:
+  name: "PostgreSQL"
+  type: "postgres"
+  description: "Local PostgreSQL for development"
+  
+connection:
+  host: postgres
+  port: 5432
+  database: airflow
+  schema: public
+  user: postgres
+  password: postgres
+  
+performance:
+  estimated_monthly_cost: 200
+  query_speed: "Medium"
+  concurrent_users: 50
+  data_size_limit: "1TB"
+  
+features:
+  supports_clustering: false
+  supports_time_travel: false
+  supports_auto_scaling: false
+  json_support: true
+  window_functions: true

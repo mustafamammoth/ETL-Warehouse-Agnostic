@@ -1,0 +1,26 @@
+warehouse:
+  name: "Snowflake"
+  type: "snowflake"
+  description: "Cloud data warehouse for production"
+  
+connection:
+  account: "your-account.snowflakecomputing.com"
+  user: "your_username"
+  password: "your_password"
+  warehouse: "COMPUTE_WH"
+  database: "ANALYTICS_DB"
+  schema: "PUBLIC"
+  role: "ACCOUNTADMIN"
+  
+performance:
+  estimated_monthly_cost: 2000
+  query_speed: "Very Fast"
+  concurrent_users: 1000
+  data_size_limit: "Unlimited"
+  
+features:
+  supports_clustering: true
+  supports_time_travel: true
+  supports_auto_scaling: true
+  json_support: true
+  window_functions: true
