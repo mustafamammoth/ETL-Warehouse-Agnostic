@@ -3,7 +3,7 @@ version: 2
 sources:
   - name: acumatica_raw
     description: Raw data extracted from Acumatica API
-    schema: public  # ← ADD THIS LINE - tells dbt to look in public schema
+    schema: public  # tells dbt to look in public schema
     tables:
       - name: raw_customers
         description: Customer master data from Acumatica
@@ -12,6 +12,14 @@ sources:
             description: Unique customer identifier (GUID)
           - name: CustomerID
             description: Customer business ID (e.g., C000001)
+          - name: CustomerName
+            description: Customer business name
+          - name: Email
+            description: Customer email addresses (may contain multiple)
+          - name: CreditLimit
+            description: Customer credit limit amount
+          - name: Status
+            description: Customer status (Active/Inactive)
 
       - name: raw_sales_invoices
         description: Sales invoices data from Acumatica
@@ -26,31 +34,67 @@ sources:
             description: Total invoice amount
           - name: Type
             description: Invoice type (Invoice, Credit Memo, etc.)
+          - name: Status
+            description: Invoice status
+          - name: Date
+            description: Invoice date
 
       - name: raw_sales_orders
         description: Sales orders data from Acumatica
         columns:
           - name: id
             description: Unique sales order identifier (GUID)
+          - name: OrderNbr
+            description: Order reference number
+          - name: CustomerID
+            description: Customer business ID
+          - name: OrderTotal
+            description: Total order amount
+          - name: OrderType
+            description: Order type (SO=Sales Order, RC=Return Credit)
+          - name: Status
+            description: Order status
+          - name: Date
+            description: Order date
+          - name: OrderedQty
+            description: Quantity ordered
 
       - name: raw_stock_items
         description: Stock items/products data from Acumatica
         columns:
           - name: id
             description: Unique stock item identifier (GUID)
+          - name: InventoryID
+            description: Product SKU/identifier
+          - name: Description
+            description: Product name and description
+          - name: ItemClass
+            description: Product class/category
+          - name: DefaultPrice
+            description: Default selling price
+          - name: ItemStatus
+            description: Active, Inactive, Discontinued
 
 models:
   - name: customers_raw
-    description: Raw customer data with basic filtering
+    description: Raw customer data with basic filtering and renaming
     columns:
       - name: customer_id
         description: Clean customer ID
         tests:
           - not_null
           - unique
+      - name: customer_name
+        description: Customer business name
+      - name: email_raw
+        description: Raw email field (may contain multiple emails)
+      - name: credit_limit_raw
+        description: Raw credit limit as text
+      - name: status
+        description: Customer status
 
   - name: sales_invoices_raw
-    description: Raw sales invoices data with basic filtering
+    description: Raw sales invoices data with basic filtering and renaming
     columns:
       - name: invoice_number
         description: Clean invoice reference number
@@ -61,29 +105,171 @@ models:
         description: Customer identifier
         tests:
           - not_null
+      - name: amount_raw
+        description: Raw invoice amount as text
+      - name: invoice_type
+        description: Invoice type
+      - name: status
+        description: Invoice status
+
+  - name: sales_orders_raw
+    description: Raw sales orders data with basic filtering and renaming
+    columns:
+      - name: order_number
+        description: Clean order reference number
+        tests:
+          - not_null
+          - unique
+      - name: customer_id
+        description: Customer identifier
+        tests:
+          - not_null
+      - name: order_total_raw
+        description: Raw order total as text
+      - name: order_type
+        description: Order type (SO, RC, etc.)
+      - name: status
+        description: Order status
 
   - name: customers
     description: Cleaned and enhanced customer data
     columns:
       - name: customer_id
+        description: Clean customer identifier
         tests:
           - not_null
           - unique
+      - name: customer_name
+        description: Cleaned customer name
+      - name: primary_email
+        description: Primary email address
+      - name: emails_all
+        description: All email addresses (original field)
+      - name: email_count
+        description: Number of email addresses
+      - name: credit_limit
+        description: Credit limit as proper decimal
+        tests:
+          - not_null
+      - name: customer_tier
+        description: Customer tier (Enterprise, Premium, Standard, Basic, No Credit)
+        tests:
+          - accepted_values:
+              values: ['Enterprise', 'Premium', 'Standard', 'Basic', 'No Credit']
+      - name: risk_category
+        description: Risk assessment (Low Risk, Medium Risk, High Risk, Unknown)
+        tests:
+          - accepted_values:
+              values: ['Low Risk', 'Medium Risk', 'High Risk', 'Unknown']
+      - name: email_quality
+        description: Email quality assessment
+        tests:
+          - accepted_values:
+              values: ['No Email', 'Invalid Email', 'Multiple Emails', 'Single Valid Email']
 
   - name: sales_invoices
     description: Cleaned and enhanced sales invoices data
     columns:
       - name: invoice_number
+        description: Clean invoice reference number
         tests:
           - not_null
           - unique
       - name: customer_id
+        description: Customer identifier
         tests:
           - not_null
       - name: amount
+        description: Invoice amount as proper decimal
         tests:
           - not_null
       - name: invoice_category
+        description: Invoice category (Regular Invoice, Credit Memo)
         tests:
           - accepted_values:
               values: ['Regular Invoice', 'Credit Memo']
+      - name: payment_status
+        description: Payment status (Paid, Outstanding, Closed with Balance, Unknown)
+        tests:
+          - accepted_values:
+              values: ['Paid', 'Outstanding', 'Closed with Balance', 'Unknown']
+      - name: aging_bucket
+        description: AR aging bucket
+        tests:
+          - accepted_values:
+              values: ['Not Applicable', 'No Due Date', 'Current', '1-30 Days Past Due', '31-60 Days Past Due', '61-90 Days Past Due', '90+ Days Past Due']
+      - name: invoice_size_category
+        description: Invoice size category
+        tests:
+          - accepted_values:
+              values: ['Large (10K+)', 'Medium (5K-10K)', 'Small (1K-5K)', 'Micro (<1K)', 'Zero/Credit']
+
+  - name: sales_orders
+    description: Cleaned and enhanced sales orders data
+    columns:
+      - name: order_number
+        description: Clean order reference number
+        tests:
+          - not_null
+          - unique
+      - name: customer_id
+        description: Customer identifier
+        tests:
+          - not_null
+      - name: order_total
+        description: Order total as proper decimal
+        tests:
+          - not_null
+      - name: order_category
+        description: Order category (Sales Order, Return Credit, Return Order, Unknown)
+        tests:
+          - accepted_values:
+              values: ['Sales Order', 'Return Credit', 'Return Order', 'Unknown']
+      - name: order_processing_status
+        description: Order processing status
+        tests:
+          - accepted_values:
+              values: ['Fulfilled Sales', 'Pending Sales', 'Customer Return', 'Other']
+      - name: order_size_category
+        description: Order size category
+        tests:
+          - accepted_values:
+              values: ['Very Large (50K+)', 'Large (20K-50K)', 'Medium (10K-20K)', 'Small (5K-10K)', 'Micro (<5K)', 'Zero/Credit']
+      - name: fulfillment_method
+        description: How order is fulfilled
+        tests:
+          - accepted_values:
+              values: ['Will Call', 'Delivery', 'Unknown']
+      - name: data_quality_flag
+        description: Data quality assessment
+        tests:
+          - accepted_values:
+              values: ['Missing Customer', 'Missing Order Date', 'Zero Amount Order', 'Zero Quantity Order', 'On Hold', 'Credit Hold', 'Valid']
+
+  - name: stock_items_raw
+    description: Raw stock items data with basic filtering
+    columns:
+      - name: inventory_id
+        description: Clean product SKU
+        tests:
+          - not_null
+          - unique
+
+  - name: stock_items
+    description: Cleaned and enhanced stock items data
+    columns:
+      - name: inventory_id
+        tests:
+          - not_null
+          - unique
+      - name: description
+        tests:
+          - not_null
+      - name: item_status_clean
+        tests:
+          - accepted_values:
+              values: ['Active', 'Inactive', 'Discontinued']
+      - name: product_category
+        tests:
+          - accepted_values:
+              values: ['Battery', 'Live Rosin', 'Apparel', '710 Brand', 'Other']
