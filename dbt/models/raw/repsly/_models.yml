@@ -215,6 +215,54 @@ sources:
           - name: TimeInPause
             description: Time spent in pause/break in minutes
 
+      - name: raw_users
+        description: Users/representatives data from Repsly
+        columns:
+          - name: ID
+            description: Unique user identifier (GUID)
+          - name: Code
+            description: User code
+          - name: Name
+            description: User full name
+          - name: Email
+            description: User email address
+          - name: Active
+            description: Whether user is active
+          - name: Role
+            description: User role(s) - can be multiple separated by |
+          - name: Note
+            description: Additional user notes
+          - name: Phone
+            description: User phone number
+          - name: Territories
+            description: Territory assignments as JSON
+          - name: SendEmailEnabled
+            description: Whether user can send emails
+          - name: Address1
+            description: Primary address line
+          - name: Address2
+            description: Secondary address line
+          - name: City
+            description: User city
+          - name: State
+            description: User state
+          - name: ZipCode
+            description: User ZIP code
+          - name: ZipCodeExt
+            description: ZIP code extension
+          - name: Country
+            description: User country
+          - name: CountryCode
+            description: Country code
+          - name: Attributes
+            description: User attributes as JSON
+          - name: Permissions
+            description: User permissions as JSON
+          - name: Teams
+            description: Team assignments as JSON
+          - name: ShowActivitiesWithoutTeam
+            description: Whether to show activities without team assignment
+
 models:
   - name: clients_raw
     description: Raw client data with basic filtering and renaming
@@ -507,5 +555,122 @@ models:
         description: Average minutes per visit
       - name: mileage_per_visit
         description: Average mileage per visit
+      - name: data_completeness_score
+        description: Data completeness score (0-100)
+
+  - name: users_raw
+    description: Raw users data with basic filtering and renaming
+    columns:
+      - name: user_id
+        description: Clean user ID (GUID)
+        tests:
+          - not_null
+          - unique
+      - name: code
+        description: User code
+      - name: name
+        description: User full name
+        tests:
+          - not_null
+      - name: email
+        description: User email address
+      - name: active_raw
+        description: Raw active flag as text
+      - name: role_raw
+        description: Raw role information
+      - name: phone
+        description: User phone number
+      - name: territories_json
+        description: Territory assignments as JSON
+      - name: permissions_json
+        description: User permissions as JSON
+
+  - name: users
+    description: Cleaned and enhanced users data
+    columns:
+      - name: user_id
+        description: Clean user identifier (GUID)
+        tests:
+          - not_null
+          - unique
+      - name: code
+        description: User code
+      - name: name
+        description: User full name
+        tests:
+          - not_null
+      - name: email_clean
+        description: Cleaned and validated email
+      - name: phone_clean
+        description: Cleaned phone number
+      - name: is_active
+        description: Active status as boolean
+        tests:
+          - not_null
+      - name: primary_role
+        description: Primary user role
+        tests:
+          - accepted_values:
+              values: ['Admin', 'Representative', '']
+      - name: user_type
+        description: User type classification
+        tests:
+          - accepted_values:
+              values: ['Admin Representative', 'Admin Only', 'Representative Only', 'Other']
+      - name: user_status
+        description: User status classification
+        tests:
+          - accepted_values:
+              values: ['Active', 'Inactive', 'Active - No Email', 'Deactivated Account', 'Unknown Status']
+      - name: company_affiliation
+        description: Company affiliation based on email domain
+        tests:
+          - accepted_values:
+              values: ['Mammoth Distribution', 'Repsly (External)', 'Test Account', 'External', 'Unknown']
+      - name: is_admin
+        description: Whether user has admin role
+        tests:
+          - not_null
+      - name: is_representative
+        description: Whether user has representative role
+        tests:
+          - not_null
+      - name: is_test_account
+        description: Whether this is a test account
+        tests:
+          - not_null
+      - name: address_quality
+        description: Address completeness assessment
+        tests:
+          - accepted_values:
+              values: ['Complete', 'Partial', 'Minimal', 'Missing']
+      - name: contact_quality
+        description: Contact information quality
+        tests:
+          - accepted_values:
+              values: ['Excellent', 'Good', 'Email Only', 'Phone Only', 'Poor']
+      - name: permission_level
+        description: Permission level assessment
+        tests:
+          - accepted_values:
+              values: ['No Permissions', 'Full Permissions', 'Limited Permissions', 'Basic Permissions']
+      - name: territory_scope
+        description: Territory assignment scope
+        tests:
+          - accepted_values:
+              values: ['All Territories', 'Specific Territories', 'No Territory Assignment']
+      - name: access_level
+        description: Security access level
+        tests:
+          - accepted_values:
+              values: ['High Access', 'Admin Access', 'Field Access', 'Limited Access']
+      - name: email_domain
+        description: Email domain for company analysis
+      - name: first_name
+        description: Parsed first name
+      - name: last_name
+        description: Parsed last name
+      - name: full_address
+        description: Concatenated full address
       - name: data_completeness_score
         description: Data completeness score (0-100)
