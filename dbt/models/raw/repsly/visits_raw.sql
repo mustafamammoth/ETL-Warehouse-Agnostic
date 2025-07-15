@@ -1,4 +1,4 @@
--- Raw visits data with basic filtering and renaming (consistent TEXT approach)
+-- Raw visits data with basic filtering and renaming (consistent TEXT approach) (dbt/models/raw/resply/visits_raw.sql)
 {{ config(materialized='view') }}
 
 SELECT 

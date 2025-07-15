@@ -1,3 +1,5 @@
+# dbt/models/repsly/_models.yml
+
 version: 2
 
 sources:
@@ -262,6 +264,46 @@ sources:
             description: Team assignments as JSON
           - name: ShowActivitiesWithoutTeam
             description: Whether to show activities without team assignment
+
+      - name: raw_representatives
+        description: Representatives/users data from Repsly
+        columns:
+          - name: Code
+            description: Representative code
+          - name: Name
+            description: Representative full name
+          - name: Note
+            description: Additional notes about representative
+          - name: Password
+            description: Password field (should be encrypted/hashed)
+          - name: Email
+            description: Representative email address
+          - name: Phone
+            description: Representative phone number
+          - name: Mobile
+            description: Representative mobile phone number
+          - name: Territories
+            description: Territory assignments as JSON array
+          - name: Active
+            description: Whether representative is active
+          - name: Attributes
+            description: Additional attributes as JSON
+          - name: Address1
+            description: Primary address line
+          - name: Address2
+            description: Secondary address line
+          - name: City
+            description: Representative city
+          - name: State
+            description: Representative state
+          - name: ZipCode
+            description: Representative ZIP code
+          - name: ZipCodeExt
+            description: ZIP code extension
+          - name: Country
+            description: Representative country
+          - name: CountryCode
+            description: Country code
 
 models:
   - name: clients_raw
@@ -674,3 +716,139 @@ models:
         description: Concatenated full address
       - name: data_completeness_score
         description: Data completeness score (0-100)
+        
+  - name: representatives_raw
+    description: Raw representatives data with basic filtering and renaming
+    columns:
+      - name: code
+        description: Representative code
+      - name: name
+        description: Representative full name
+        tests:
+          - not_null
+      - name: note
+        description: Additional notes about representative
+      - name: password_raw
+        description: Raw password field (should be encrypted)
+      - name: email
+        description: Representative email address
+      - name: phone
+        description: Representative phone number
+      - name: mobile
+        description: Representative mobile phone number
+      - name: territories_json
+        description: Territory assignments as JSON array
+      - name: active_raw
+        description: Raw active flag as text
+      - name: attributes_json
+        description: Additional attributes as JSON
+      - name: address1
+        description: Primary address line
+      - name: address2
+        description: Secondary address line
+      - name: city
+        description: Representative city
+      - name: state
+        description: Representative state
+      - name: zip_code
+        description: Representative ZIP code
+      - name: zip_code_ext
+        description: ZIP code extension
+      - name: country
+        description: Representative country
+      - name: country_code
+        description: Country code
+
+  - name: representatives
+    description: Cleaned and enhanced representatives data
+    columns:
+      - name: representative_code
+        description: Clean representative code
+        tests:
+          - unique
+      - name: representative_name
+        description: Clean representative name
+        tests:
+          - not_null
+      - name: note
+        description: Additional notes about representative
+      - name: email_clean
+        description: Cleaned and validated email address
+      - name: phone_clean
+        description: Cleaned phone number (10 digits)
+      - name: mobile_clean
+        description: Cleaned mobile number (10 digits)
+      - name: is_active
+        description: Active status as boolean
+        tests:
+          - not_null
+      - name: full_address
+        description: Concatenated full address
+      - name: email_domain
+        description: Email domain for company analysis
+      - name: first_name
+        description: Parsed first name
+      - name: last_name
+        description: Parsed last name
+      - name: primary_territory
+        description: Primary territory assignment
+      - name: territory_count
+        description: Number of territories assigned
+      - name: company_affiliation
+        description: Company affiliation based on email domain
+        tests:
+          - accepted_values:
+              values: ['Mammoth Distribution', '710 Labs', 'Pure Beauty', 'Heavy Hitters', 'Repsly (External)', 'Test Account', 'External', 'Unknown']
+      - name: representative_type
+        description: Representative type based on territories
+        tests:
+          - accepted_values:
+              values: ['710 Labs Representative', 'Mammoth CA Representative', 'California Representative', 'Colorado Representative', 'Michigan Representative', 'New York Representative', 'Multi-Territory Representative', 'Single Territory Representative', 'No Territory Assignment']
+      - name: representative_status
+        description: Activity and contact status
+        tests:
+          - accepted_values:
+              values: ['Active', 'Active - No Email', 'Inactive', 'Unknown Status']
+      - name: contact_quality
+        description: Contact information quality assessment
+        tests:
+          - accepted_values:
+              values: ['Excellent', 'Good', 'Phone Only', 'Poor']
+      - name: address_quality
+        description: Address completeness assessment
+        tests:
+          - accepted_values:
+              values: ['Complete', 'Partial', 'Minimal', 'Missing']
+      - name: territory_scope
+        description: Territory assignment scope
+        tests:
+          - accepted_values:
+              values: ['Multi-Regional', 'Dual Territory', 'Single Territory', 'No Territory']
+      - name: representative_tier
+        description: Representative tier classification
+        tests:
+          - accepted_values:
+              values: ['Internal - Primary', 'Partner - Primary', 'External - Active', 'Active - Unassigned', 'Inactive/Unknown']
+      - name: geographic_region
+        description: Geographic region based on primary territory
+        tests:
+          - accepted_values:
+              values: ['West Coast', 'Mountain West', 'Midwest', 'Northeast', 'Other/Unknown']
+      - name: primary_contact_method
+        description: Primary contact method available
+        tests:
+          - accepted_values:
+              values: ['Email', 'Mobile', 'Phone', 'No Contact Method']
+      - name: has_contact_info
+        description: Whether representative has any contact information
+        tests:
+          - not_null
+      - name: specialization
+        description: Representative specialization area
+        tests:
+          - accepted_values:
+              values: ['710 Labs Specialist', 'Mammoth Internal', 'Multi-Regional Specialist', 'Territory Specialist', 'General Representative']
+      - name: data_completeness_score
+        description: Data completeness score (0-100)
+        tests:
+          - not_null

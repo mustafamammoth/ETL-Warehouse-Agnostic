@@ -1,3 +1,4 @@
+# repsly_dag.py
 from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.operators.python import PythonOperator
@@ -89,6 +90,14 @@ ENDPOINTS = {
         'limit': 50,
         'id_field': 'LastProductID',
         'data_field': 'Products',
+        'total_count_field': 'TotalCount'
+    },
+    'users': {
+        'path': 'export/users',
+        'pagination_type': 'id',
+        'limit': 50,
+        'id_field': 'LastProductID',
+        'data_field': 'Users',
         'total_count_field': 'TotalCount'
     },
     'representatives': {
@@ -450,15 +459,21 @@ def run_dbt_transformations(**context):
         commands = [
             'dbt run --select clients_raw',
             'dbt run --select clients',
+
             'dbt run --select client_notes_raw',
             'dbt run --select client_notes',
+
             'dbt run --select daily_working_time_raw',
             'dbt run --select daily_working_time',
             # Add more as you create them:
-            # 'dbt run --select visits_raw',
-            # 'dbt run --select visits',
-            # 'dbt run --select products_raw',
-            # 'dbt run --select products',
+            'dbt run --select visits_raw',
+            'dbt run --select visits',
+
+            'dbt run --select representatives_raw',      # ✅ ADD THIS
+            'dbt run --select representatives',          # ✅ ADD THIS
+
+            'dbt run --select users_raw',      # ✅ ADD THIS
+            'dbt run --select users',          # ✅ ADD THIS
         ]
         
         for cmd in commands:
@@ -572,6 +587,35 @@ def check_transformed_data(**context):
             print(f"   Average client time: {row[4]:.1f}%" if row[4] else "N/A")
             print(f"   High efficiency days: {row[5]}")
             print(f"   Average daily mileage: {row[6]:.1f}" if row[6] else "N/A")
+
+        # ✅ ADD THIS - Check representatives data
+        print("\n📊 Checking representatives data...")
+        with engine.connect() as conn:
+            result = conn.execute("""
+                SELECT 
+                    COUNT(*) as total_representatives,
+                    COUNT(DISTINCT representative_code) as unique_rep_codes,
+                    COUNT(email_clean) as reps_with_email,
+                    COUNT(CASE WHEN is_active = true THEN 1 END) as active_reps,
+                    COUNT(CASE WHEN company_affiliation = 'Mammoth Distribution' THEN 1 END) as mammoth_reps,
+                    COUNT(CASE WHEN company_affiliation = '710 Labs' THEN 1 END) as labs_reps,
+                    AVG(territory_count) as avg_territories_per_rep,
+                    COUNT(CASE WHEN representative_tier = 'Internal - Primary' THEN 1 END) as internal_primary,
+                    AVG(data_completeness_score) as avg_completeness_score
+                FROM public.representatives
+            """)
+            
+            row = result.fetchone()
+            print(f"📊 Representatives Data Quality:")
+            print(f"   Total representatives: {row[0]}")
+            print(f"   Unique rep codes: {row[1]}")
+            print(f"   Reps with email: {row[2]}")
+            print(f"   Active representatives: {row[3]}")
+            print(f"   Mammoth reps: {row[4]}")
+            print(f"   710 Labs reps: {row[5]}")
+            print(f"   Avg territories per rep: {row[6]:.1f}" if row[6] else "N/A")
+            print(f"   Internal primary reps: {row[7]}")
+            print(f"   Avg completeness score: {row[8]:.1f}" if row[8] else "N/A")
 
         # Add more data quality checks here as you add models...
         

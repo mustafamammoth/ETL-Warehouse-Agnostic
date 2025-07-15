@@ -1,4 +1,4 @@
--- Cleaned and standardized visits data
+-- Cleaned and standardized visits data (dbt/models/curated/resply/visits.sql)
 {{ config(materialized='table') }}
 
 WITH visit_cleaning AS (
