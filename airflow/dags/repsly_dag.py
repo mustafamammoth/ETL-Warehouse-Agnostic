@@ -52,6 +52,7 @@ if not all([REPSLY_USERNAME, REPSLY_PASSWORD]):
 
 # Define all endpoints you want to extract (just like Acumatica ENDPOINTS)
 ENDPOINTS = {
+    # ✅ Already have models for these:
     'clients': {
         'path': 'export/clients',
         'pagination_type': 'timestamp',
@@ -84,6 +85,23 @@ ENDPOINTS = {
         'data_field': 'DailyWorkingTime',
         'total_count_field': 'TotalCount'
     },
+
+    # ✅ Have models being created:
+    'representatives': {
+        'path': 'export/representatives',
+        'pagination_type': 'static',
+        'data_field': 'Representatives'
+    },
+    'users': {
+        'path': 'export/users',
+        'pagination_type': 'id',
+        'limit': 50,
+        'id_field': 'LastUserID',  # Fixed: was LastProductID
+        'data_field': 'Users',
+        'total_count_field': 'TotalCount'
+    },
+
+    # ✅ Defined but no models yet:
     'products': {
         'path': 'export/products',
         'pagination_type': 'id',
@@ -92,21 +110,144 @@ ENDPOINTS = {
         'data_field': 'Products',
         'total_count_field': 'TotalCount'
     },
-    'users': {
-        'path': 'export/users',
+
+    # 🆕 NEW ENDPOINTS TO ADD:
+    'retail_audits': {
+        'path': 'export/retailaudits',
         'pagination_type': 'id',
         'limit': 50,
-        'id_field': 'LastProductID',
-        'data_field': 'Users',
+        'id_field': 'LastRetailAuditID',
+        'data_field': 'RetailAudits',
         'total_count_field': 'TotalCount'
     },
-    'representatives': {
-        'path': 'export/representatives',
+    'purchase_orders': {
+        'path': 'export/purchaseorders',
+        'pagination_type': 'id',
+        'limit': 50,
+        'id_field': 'LastPurchaseOrderID',
+        'data_field': 'PurchaseOrders',
+        'total_count_field': 'TotalCount'
+    },
+    'document_types': {
+        'path': 'export/documenttypes',
         'pagination_type': 'static',
-        'data_field': 'Representatives'
+        'data_field': 'DocumentTypes'
+    },
+    'pricelists': {
+        'path': 'export/pricelists',
+        'pagination_type': 'static',
+        'data_field': 'PriceLists',
+    },
+    'pricelist_items': {
+        'path': 'export/pricelistsItems',
+        'pagination_type': 'id',
+        'limit': 50,
+        'id_field': 'LastPriceListItemID',
+        'data_field': 'PriceListItems',
+        'total_count_field': 'TotalCount'
+    },
+    'forms': {
+        'path': 'export/forms',
+        'pagination_type': 'id',
+        'limit': 50,
+        'id_field': 'LastFormID',
+        'data_field': 'Forms',
+        'total_count_field': 'TotalCount'
+    },
+    'photos': {
+        'path': 'export/photos',
+        'pagination_type': 'id',
+        'limit': 50,
+        'id_field': 'LastPhotoID',
+        'data_field': 'Photos',
+        'total_count_field': 'TotalCount'
+    },
+    'visit_schedules': {
+        'path': 'export/visitschedules',
+        'pagination_type': 'datetime_range',
+        'data_field': 'VisitSchedules',
+        'url_pattern': 'export/visitschedules/{start_date}/{end_date}'
+    },
+    'visit_schedules_extended': {
+        'path': 'export/schedules',
+        'pagination_type': 'datetime_range', 
+        'data_field': 'Schedules',  # ✅ FIXED: Was 'SchedulesExtended', now 'Schedules'
+        'url_pattern': 'export/schedules/{start_date}/{end_date}'
+    },
+    'visit_schedule_realizations': {
+        'path': 'export/visitrealizations',
+        'pagination_type': 'query_params',
+        'data_field': 'VisitRealizations',
+        'url_pattern': 'export/visitrealizations',
+        'query_params': {
+            'modified_field': 'modified',
+            'skip_field': 'skip'
+        },
+        'limit': 50,  # API enforced limit
+        'total_count_field': 'TotalCount'
     }
-    # Add more endpoints here as needed
+    # 'import_job_status': {
+    #     'path': 'export/importStatus',
+    #     'pagination_type': 'static',
+    #     'data_field': 'ImportJobStatus'
+    # }
 }
+# ENDPOINTS = {
+#     'clients': {
+#         'path': 'export/clients',
+#         'pagination_type': 'timestamp',
+#         'limit': 50,
+#         'timestamp_field': 'LastTimeStamp',
+#         'data_field': 'Clients',
+#         'total_count_field': 'TotalCount'
+#     },
+#     'client_notes': {
+#         'path': 'export/clientnotes',
+#         'pagination_type': 'id',
+#         'limit': 50,
+#         'id_field': 'LastClientNoteID',
+#         'data_field': 'ClientNotes',
+#         'total_count_field': 'TotalCount'
+#     },
+#     'visits': {
+#         'path': 'export/visits',
+#         'pagination_type': 'timestamp',
+#         'limit': 50,
+#         'timestamp_field': 'LastTimeStamp',
+#         'data_field': 'Visits',
+#         'total_count_field': 'TotalCount'
+#     },
+#     'daily_working_time': {
+#         'path': 'export/dailyworkingtime',
+#         'pagination_type': 'id',
+#         'limit': 50,
+#         'id_field': 'LastDailyWorkingTimeID',
+#         'data_field': 'DailyWorkingTime',
+#         'total_count_field': 'TotalCount'
+#     },
+#     'products': {
+#         'path': 'export/products',
+#         'pagination_type': 'id',
+#         'limit': 50,
+#         'id_field': 'LastProductID',
+#         'data_field': 'Products',
+#         'total_count_field': 'TotalCount'
+#     },
+#     'users': {
+#         'path': 'export/users',
+#         'pagination_type': 'id',
+#         'limit': 50,
+#         'id_field': 'LastProductID',
+#         'data_field': 'Users',
+#         'total_count_field': 'TotalCount'
+#     },
+#     'representatives': {
+#         'path': 'export/representatives',
+#         'pagination_type': 'static',
+#         'data_field': 'Representatives'
+#     }
+#     # Add more endpoints here as needed
+# }
 
 def create_authenticated_session():
     """Create authenticated session for Repsly"""
@@ -142,8 +283,9 @@ def flatten_repsly_record(record):
     
     return flattened
 
+
 def get_paginated_data(session, endpoint_config, endpoint_name):
-    """Get data from Repsly endpoint with appropriate pagination (just like Acumatica)"""
+    """Get data from Repsly endpoint with appropriate pagination (handles multiple patterns)"""
     all_data = []
     
     if endpoint_config['pagination_type'] == 'static':
@@ -166,9 +308,177 @@ def get_paginated_data(session, endpoint_config, endpoint_name):
         except Exception as e:
             print(f"   Error fetching static data: {e}")
             raise
+    
+    elif endpoint_config['pagination_type'] == 'datetime_range':
+        # Date range endpoints (visit schedules)
+        from datetime import datetime, timedelta
+        
+        # For testing, use last 30 days. In production, you might want to make this configurable
+        if TESTING_MODE:
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=30)
+        else:
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=365)  # Last year for production
+        
+        # Format dates as required by API (usually YYYY-MM-DD or ISO format)
+        start_date_str = start_date.strftime('%Y-%m-%d')
+        end_date_str = end_date.strftime('%Y-%m-%d')
+        
+        endpoint_url = f"{REPSLY_BASE_URL}/{endpoint_config['url_pattern'].format(start_date=start_date_str, end_date=end_date_str)}"
+        print(f"   Fetching date range data from: {endpoint_url}")
+        
+        try:
+            response = session.get(endpoint_url)
+            response.raise_for_status()
+            data = response.json()
+            
+            if endpoint_config.get('data_field'):
+                records = data.get(endpoint_config['data_field'], [])
+            else:
+                records = data if isinstance(data, list) else [data]
+            
+            all_data.extend(records)
+            print(f"   Retrieved {len(records)} records for date range {start_date_str} to {end_date_str}")
+            
+        except Exception as e:
+            print(f"   Error fetching date range data: {e}")
+            raise
+    
+    # Fixed query_params section for visit_schedule_realizations
+
+    # Fixed pagination logic for visit_schedule_realizations endpoint
+    # Replace the query_params section in your get_paginated_data function
+
+    elif endpoint_config['pagination_type'] == 'query_params':
+        # Query parameter based pagination (visit realizations)
+        from datetime import datetime, timedelta
+        
+        # Start with a reasonable date - use current date minus a few months
+        # The API documentation shows we need modified={modifiedDateTime}&skip={from}
+        if TESTING_MODE:
+            # Start from 3 months ago for testing
+            start_date = datetime.now() - timedelta(days=90)
+        else:
+            # Start from 1 year ago for production
+            start_date = datetime.now() - timedelta(days=365)
+        
+        # Format date as ISO string (the format that worked in your second document)
+        # Based on the successful response, use: 2025-04-17T18:30:47.114Z format
+        modified_date = start_date.strftime('%Y-%m-%dT%H:%M:%S.000Z')
+        
+        skip = 0
+        page_size = 50  # API limit
+        max_pages = 190  # Respect 9,500 skip limit (9500/50 = 190 pages)
+        page_count = 0
+        
+        print(f"   Starting pagination with modified date: {modified_date}")
+        
+        while page_count < max_pages:
+            page_count += 1
+            
+            # Check skip limit (API limitation)
+            if skip >= 9500:
+                print(f"   Reached skip limit (9500), stopping pagination")
+                break
+            
+            # Build the URL with proper parameters
+            # Use the exact format from API docs: modified={modifiedDateTime}&skip={from}
+            endpoint_url = f"{REPSLY_BASE_URL}/{endpoint_config['url_pattern']}?modified={modified_date}&skip={skip}"
+            print(f"   Page {page_count}: Fetching from {endpoint_url}")
+            
+            try:
+                response = session.get(endpoint_url)
+                
+                # Check for specific error responses
+                if response.status_code == 400:
+                    print(f"   400 Bad Request. Response: {response.text[:200]}")
+                    # Try moving the date forward by a day and reset skip
+                    if skip == 0:
+                        # If this is the first attempt with this date, try a more recent date
+                        start_date = start_date + timedelta(days=1)
+                        modified_date = start_date.strftime('%Y-%m-%dT%H:%M:%S.000Z')
+                        print(f"   Trying newer date: {modified_date}")
+                        continue
+                    else:
+                        # If we were paginating successfully but hit an error, 
+                        # move date forward and reset skip
+                        start_date = start_date + timedelta(days=30)
+                        modified_date = start_date.strftime('%Y-%m-%dT%H:%M:%S.000Z')
+                        skip = 0
+                        print(f"   Moving to newer date: {modified_date}, resetting skip to 0")
+                        continue
+                
+                response.raise_for_status()
+                data = response.json()
+                
+                # Extract records using the correct field name
+                records = data.get(endpoint_config['data_field'], [])
+                print(f"   Retrieved {len(records)} records (total so far: {len(all_data)})")
+                
+                # Check if we got any records
+                if not records:
+                    print(f"   No records found for date {modified_date}, trying newer date")
+                    # Move forward by 30 days and reset skip
+                    start_date = start_date + timedelta(days=30)
+                    modified_date = start_date.strftime('%Y-%m-%dT%H:%M:%S.000Z')
+                    skip = 0
+                    
+                    # If we've moved too far into the future, stop
+                    if start_date > datetime.now():
+                        print(f"   Reached current date, stopping pagination")
+                        break
+                    continue
+                
+                all_data.extend(records)
+                
+                # Check if we've hit testing limit
+                if TESTING_MODE and MAX_RECORDS_PER_ENDPOINT and len(all_data) >= MAX_RECORDS_PER_ENDPOINT:
+                    all_data = all_data[:MAX_RECORDS_PER_ENDPOINT]
+                    print(f"   Reached testing limit of {MAX_RECORDS_PER_ENDPOINT} records")
+                    break
+                
+                # If we got fewer records than page size, we might be at the end
+                if len(records) < page_size:
+                    print(f"   Got {len(records)} records (less than page size {page_size})")
+                    # Try moving forward in time to see if there's more recent data
+                    start_date = start_date + timedelta(days=30)
+                    modified_date = start_date.strftime('%Y-%m-%dT%H:%M:%S.000Z')
+                    skip = 0
+                    
+                    # If we've moved too far into the future, stop
+                    if start_date > datetime.now():
+                        print(f"   Reached current date, stopping pagination")
+                        break
+                    continue
+                
+                # Move to next page
+                skip += page_size
+                time.sleep(0.1)  # Be nice to the API
+                
+            except requests.exceptions.RequestException as e:
+                print(f"   Request error on page {page_count}: {e}")
+                if page_count == 1:
+                    # If first request fails, try a different date
+                    start_date = start_date + timedelta(days=30)
+                    modified_date = start_date.strftime('%Y-%m-%dT%H:%M:%S.000Z')
+                    skip = 0
+                    page_count = 0  # Reset page count to retry
+                    continue
+                else:
+                    # If we were paginating successfully but hit an error, 
+                    # try moving forward in time
+                    start_date = start_date + timedelta(days=30)
+                    modified_date = start_date.strftime('%Y-%m-%dT%H:%M:%S.000Z')
+                    skip = 0
+                    continue
+            
+            except Exception as e:
+                print(f"   Unexpected error on page {page_count}: {e}")
+                break
             
     else:
-        # Paginated endpoints
+        # Standard paginated endpoints (existing logic)
         last_value = 0
         page_count = 0
         max_pages = 1000
@@ -229,6 +539,8 @@ def get_paginated_data(session, endpoint_config, endpoint_name):
     
     print(f"✅ {endpoint_name}: Collected {len(all_data)} total records")
     return all_data
+
+
 
 def extract_repsly_endpoint(endpoint_name, **context):
     """Extract data from any Repsly endpoint (same pattern as Acumatica)"""
@@ -474,6 +786,25 @@ def run_dbt_transformations(**context):
 
             'dbt run --select users_raw',      # ✅ ADD THIS
             'dbt run --select users',          # ✅ ADD THIS
+
+            'dbt run --select visit_schedule_realizations_raw',
+            'dbt run --select visit_schedule_realizations',
+
+
+            'dbt run --select visit_schedules_extended_raw',
+            'dbt run --select visit_schedules_extended',  
+
+            'dbt run --select forms_raw',
+            'dbt run --select forms_staging', 
+            'dbt run --select form_items',
+            'dbt run --select forms_business',
+
+            # ✅ ADD THESE NEW LINES:
+            'dbt run --select photos_raw',
+            'dbt run --select photos',    
+
+            'dbt run --select visit_schedules_raw',
+            'dbt run --select visit_schedules',      
         ]
         
         for cmd in commands:
@@ -617,11 +948,231 @@ def check_transformed_data(**context):
             print(f"   Internal primary reps: {row[7]}")
             print(f"   Avg completeness score: {row[8]:.1f}" if row[8] else "N/A")
 
-        # Add more data quality checks here as you add models...
+        # ✅ ADD THIS - Check visit schedule realizations data
+        print("\n📊 Checking visit schedule realizations data...")
+        with engine.connect() as conn:
+            result = conn.execute("""
+                SELECT 
+                    COUNT(*) as total_schedule_records,
+                    COUNT(DISTINCT employee_id) as unique_employees,
+                    COUNT(DISTINCT place_id) as unique_places,
+                    COUNT(CASE WHEN visit_status = 'Planned' THEN 1 END) as planned_visits,
+                    COUNT(CASE WHEN visit_status = 'Unplanned' THEN 1 END) as unplanned_visits,
+                    COUNT(CASE WHEN visit_status = 'Missed' THEN 1 END) as missed_visits,
+                    COUNT(CASE WHEN has_actual_times = true THEN 1 END) as visits_with_actual_times,
+                    COUNT(CASE WHEN has_planned_times = true THEN 1 END) as visits_with_planned_times,
+                    AVG(actual_duration_minutes) as avg_actual_duration,
+                    COUNT(CASE WHEN schedule_adherence = 'Good Adherence' THEN 1 END) as good_adherence_visits,
+                    COUNT(CASE WHEN geographic_region = 'West Coast' THEN 1 END) as west_coast_visits,
+                    COUNT(CASE WHEN work_day_type = 'Weekday' THEN 1 END) as weekday_visits,
+                    AVG(data_completeness_score) as avg_completeness_score
+                FROM public.visit_schedule_realizations
+            """)
+            
+            row = result.fetchone()
+            print(f"📊 Visit Schedule Realizations Data Quality:")
+            print(f"   Total schedule records: {row[0]}")
+            print(f"   Unique employees: {row[1]}")
+            print(f"   Unique places: {row[2]}")
+            print(f"   Planned visits: {row[3]}")
+            print(f"   Unplanned visits: {row[4]}")
+            print(f"   Missed visits: {row[5]}")
+            print(f"   Visits with actual times: {row[6]}")
+            print(f"   Visits with planned times: {row[7]}")
+            print(f"   Avg actual duration: {row[8]:.1f} minutes" if row[8] else "N/A")
+            print(f"   Good adherence visits: {row[9]}")
+            print(f"   West Coast visits: {row[10]}")
+            print(f"   Weekday visits: {row[11]}")
+            print(f"   Avg completeness score: {row[12]:.1f}" if row[12] else "N/A")
         
         engine.dispose()
         print("✅ All data quality checks completed successfully!")
+
+
+        # print("\n📊 Checking visit schedules extended data...")
+        # with engine.connect() as conn:
+        #     result = conn.execute("""
+        #         SELECT 
+        #             COUNT(*) as total_schedules,
+        #             COUNT(DISTINCT representative_name_clean) as unique_representatives,
+        #             COUNT(DISTINCT client_code) as unique_clients,
+        #             COUNT(CASE WHEN schedule_type = 'Recurring Schedule' THEN 1 END) as recurring_schedules,
+        #             COUNT(CASE WHEN schedule_type = 'One-time Appointment' THEN 1 END) as one_time_appointments,
+        #             COUNT(CASE WHEN has_specific_time = true THEN 1 END) as schedules_with_time,
+        #             COUNT(CASE WHEN scheduled_duration_minutes > 0 THEN 1 END) as schedules_with_duration,
+        #             AVG(scheduled_duration_minutes) as avg_duration_minutes,
+        #             COUNT(CASE WHEN geographic_region = 'California' THEN 1 END) as california_schedules,
+        #             COUNT(CASE WHEN geographic_region = 'New York' THEN 1 END) as new_york_schedules,
+        #             COUNT(CASE WHEN work_day_type = 'Weekday' THEN 1 END) as weekday_schedules,
+        #             COUNT(CASE WHEN client_tier = 'Corporate Client' THEN 1 END) as corporate_clients,
+        #             COUNT(CASE WHEN alert_configuration = 'Full Alerts' THEN 1 END) as full_alert_schedules,
+        #             COUNT(CASE WHEN schedule_complexity = 'Complex Schedule' THEN 1 END) as complex_schedules,
+        #             COUNT(CASE WHEN rep_volume_category = 'High Volume Rep' THEN 1 END) as high_volume_rep_schedules,
+        #             AVG(data_completeness_score) as avg_completeness_score
+        #         FROM public.visit_schedules_extended
+        #     """)
+            
+        #     row = result.fetchone()
+        #     print(f"📊 Visit Schedules Extended Data Quality:")
+        #     print(f"   Total schedules: {row[0]}")
+        #     print(f"   Unique representatives: {row[1]}")
+        #     print(f"   Unique clients: {row[2]}")
+        #     print(f"   Recurring schedules: {row[3]}")
+        #     print(f"   One-time appointments: {row[4]}")
+        #     print(f"   Schedules with specific time: {row[5]}")
+        #     print(f"   Schedules with duration: {row[6]}")
+        #     print(f"   Avg duration: {row[7]:.1f} minutes" if row[7] else "N/A")
+        #     print(f"   California schedules: {row[8]}")
+        #     print(f"   New York schedules: {row[9]}")
+        #     print(f"   Weekday schedules: {row[10]}")
+        #     print(f"   Corporate clients: {row[11]}")
+        #     print(f"   Full alert schedules: {row[12]}")
+        #     print(f"   Complex schedules: {row[13]}")
+        #     print(f"   High volume rep schedules: {row[14]}")
+        #     print(f"   Avg completeness score: {row[15]:.1f}" if row[15] else "N/A")
+
+
+
+        # ✅ ADD THIS - Check forms data
+        # print("\n📊 Checking forms data...")
+        # with engine.connect() as conn:
+        #     result = conn.execute("""
+        #         SELECT 
+        #             COUNT(*) as total_forms,
+        #             COUNT(DISTINCT visit_id) as unique_visits,
+        #             COUNT(DISTINCT client_code) as unique_clients,
+        #             COUNT(DISTINCT representative_name) as unique_representatives,
+        #             COUNT(CASE WHEN needs_follow_up = true THEN 1 END) as forms_needing_followup,
+        #             COUNT(CASE WHEN out_of_stock = true THEN 1 END) as forms_with_stockouts,
+        #             COUNT(CASE WHEN carries_thcv_gummies = true THEN 1 END) as clients_with_thcv,
+        #             COUNT(CASE WHEN has_retail_kit = true THEN 1 END) as clients_with_retail_kit,
+        #             COUNT(CASE WHEN doing_education = true THEN 1 END) as forms_with_education,
+        #             COUNT(CASE WHEN presentation_quality = 'Good' THEN 1 END) as good_presentations,
+        #             COUNT(CASE WHEN priority_level = 'High Priority' THEN 1 END) as high_priority_visits,
+        #             AVG(minutes_on_site) as avg_visit_duration,
+        #             AVG(photos_taken) as avg_photos_per_visit,
+        #             COUNT(CASE WHEN has_gps_location = true THEN 1 END) as forms_with_gps
+        #         FROM public.forms_business
+        #     """)
+            
+        #     row = result.fetchone()
+        #     print(f"📊 Forms Data Quality:")
+        #     print(f"   Total forms: {row[0]}")
+        #     print(f"   Unique visits: {row[1]}")
+        #     print(f"   Unique clients: {row[2]}")
+        #     print(f"   Unique representatives: {row[3]}")
+        #     print(f"   Forms needing follow-up: {row[4]}")
+        #     print(f"   Forms with stock-outs: {row[5]}")
+        #     print(f"   Clients with THCv gummies: {row[6]}")
+        #     print(f"   Clients with retail kit: {row[7]}")
+        #     print(f"   Forms with education: {row[8]}")
+        #     print(f"   Good presentations: {row[9]}")
+        #     print(f"   High priority visits: {row[10]}")
+        #     print(f"   Avg visit duration: {row[11]:.1f} minutes" if row[11] else "N/A")
+        #     print(f"   Avg photos per visit: {row[12]:.1f}" if row[12] else "N/A")
+        #     print(f"   Forms with GPS: {row[13]}")
+
+        # # ✅ ALSO ADD - Check form_items exploded data
+        # print("\n📊 Checking form items exploded data...")
+        # with engine.connect() as conn:
+        #     result = conn.execute("""
+        #         SELECT 
+        #             COUNT(*) as total_form_items,
+        #             COUNT(DISTINCT form_id) as forms_with_items,
+        #             COUNT(DISTINCT field) as unique_fields,
+        #             AVG(item_count) as avg_items_per_form,
+        #             MAX(item_count) as max_items_per_form
+        #         FROM (
+        #             SELECT form_id, COUNT(*) as item_count
+        #             FROM public.form_items
+        #             GROUP BY form_id
+        #         ) form_counts
+        #     """)
+            
+        #     row = result.fetchone()
+        #     print(f"📊 Form Items Data Quality:")
+        #     print(f"   Total form items: {row[0]}")
+        #     print(f"   Forms with items: {row[1]}")
+        #     print(f"   Unique field types: {row[2]}")
+        #     print(f"   Avg items per form: {row[3]:.1f}" if row[3] else "N/A")
+        #     print(f"   Max items per form: {row[4]}")
         
+
+        # ✅ ADD THIS - Check photos data
+        print("\n📊 Checking photos data...")
+        with engine.connect() as conn:
+            result = conn.execute("""
+                SELECT 
+                    COUNT(*) as total_photos,
+                    COUNT(DISTINCT visit_id) as unique_visits_with_photos,
+                    COUNT(DISTINCT client_code) as unique_clients_with_photos,
+                    COUNT(DISTINCT representative_name) as unique_representatives,
+                    COUNT(CASE WHEN is_competition_photo = true THEN 1 END) as competition_photos,
+                    COUNT(CASE WHEN is_display_photo = true THEN 1 END) as display_photos,
+                    COUNT(CASE WHEN is_marketing_photo = true THEN 1 END) as marketing_photos,
+                    COUNT(CASE WHEN is_social_media_worthy = true THEN 1 END) as social_media_photos,
+                    COUNT(CASE WHEN business_priority = 'High Priority' THEN 1 END) as high_priority_photos,
+                    COUNT(CASE WHEN has_note = true THEN 1 END) as photos_with_notes,
+                    COUNT(CASE WHEN is_valid_url = true THEN 1 END) as valid_photos,
+                    COUNT(CASE WHEN time_of_day = 'Morning' THEN 1 END) as morning_photos,
+                    COUNT(CASE WHEN time_of_day = 'Afternoon' THEN 1 END) as afternoon_photos,
+                    AVG(CASE WHEN photo_timestamp IS NOT NULL THEN 1.0 ELSE 0.0 END) * 100 as pct_with_timestamp
+                FROM public.photos
+            """)
+            
+            row = result.fetchone()
+            print(f"📊 Photos Data Quality:")
+            print(f"   Total photos: {row[0]}")
+            print(f"   Unique visits with photos: {row[1]}")
+            print(f"   Unique clients with photos: {row[2]}")
+            print(f"   Unique representatives: {row[3]}")
+            print(f"   Competition photos: {row[4]}")
+            print(f"   Display photos: {row[5]}")
+            print(f"   Marketing photos: {row[6]}")
+            print(f"   Social media worthy: {row[7]}")
+            print(f"   High priority photos: {row[8]}")
+            print(f"   Photos with notes: {row[9]}")
+            print(f"   Valid photo URLs: {row[10]}")
+            print(f"   Morning photos: {row[11]}")
+            print(f"   Afternoon photos: {row[12]}")
+            print(f"   Photos with timestamp: {row[13]:.1f}%" if row[13] else "N/A")
+
+
+        # ✅ ADD THIS - Check visit schedules data
+        print("\n📊 Checking visit schedules data...")
+        with engine.connect() as conn:
+            result = conn.execute("""
+                SELECT 
+                    COUNT(*) as total_schedules,
+                    COUNT(DISTINCT representative_code) as unique_representatives,
+                    COUNT(DISTINCT client_code) as unique_clients,
+                    COUNT(CASE WHEN geographic_region = 'California' THEN 1 END) as california_schedules,
+                    COUNT(CASE WHEN geographic_region = 'New York' THEN 1 END) as new_york_schedules,
+                    COUNT(CASE WHEN work_day_type = 'Weekday' THEN 1 END) as weekday_schedules,
+                    COUNT(CASE WHEN time_of_day = 'Morning' THEN 1 END) as morning_schedules,
+                    COUNT(CASE WHEN client_business_type = 'Corporate Client (DBA)' THEN 1 END) as corporate_clients,
+                    COUNT(CASE WHEN has_visit_notes = true THEN 1 END) as schedules_with_notes,
+                    COUNT(CASE WHEN has_complete_address = true THEN 1 END) as schedules_with_addresses,
+                    COUNT(CASE WHEN has_valid_datetime = true THEN 1 END) as schedules_with_datetime,
+                    AVG(data_completeness_score) as avg_completeness_score
+                FROM public.visit_schedules
+            """)
+            
+            row = result.fetchone()
+            print(f"📊 Visit Schedules Data Quality:")
+            print(f"   Total schedules: {row[0]}")
+            print(f"   Unique representatives: {row[1]}")
+            print(f"   Unique clients: {row[2]}")
+            print(f"   California schedules: {row[3]}")
+            print(f"   New York schedules: {row[4]}")
+            print(f"   Weekday schedules: {row[5]}")
+            print(f"   Morning schedules: {row[6]}")
+            print(f"   Corporate clients: {row[7]}")
+            print(f"   Schedules with notes: {row[8]}")
+            print(f"   Schedules with addresses: {row[9]}")
+            print(f"   Schedules with datetime: {row[10]}")
+            print(f"   Avg completeness score: {row[11]:.1f}" if row[11] else "N/A")
+
     except Exception as e:
         print(f"❌ Data quality check failed: {e}")
         # Don't fail the pipeline if this is just a check issue
