@@ -51,6 +51,10 @@ ENDPOINTS = {
     'sales_orders': 'SalesOrder', 
     'sales_invoices': 'SalesInvoice',
     'stock_items': 'StockItem',
+    'bill': 'Bill',
+    'vendor': 'Vendor',
+    'purchase_order': 'PurchaseOrder',
+
 }
 
 def create_authenticated_session():
@@ -198,7 +202,7 @@ def load_csv_to_warehouse(**context):
         raise
 
 def load_to_postgres_warehouse(config):
-    """PostgreSQL-specific loading"""
+    """PostgreSQL-specific loading - FIXED transaction handling"""
     from sqlalchemy import create_engine, text
     import pandas as pd
     
@@ -209,11 +213,16 @@ def load_to_postgres_warehouse(config):
     connection_string = get_connection_string('postgres')
     engine = create_engine(connection_string)
     
+    # ✅ Updated to include bills
     csv_files = {
         'raw_customers': '/opt/airflow/data/raw/acumatica/customers.csv',
         'raw_sales_orders': '/opt/airflow/data/raw/acumatica/sales_orders.csv',
         'raw_sales_invoices': '/opt/airflow/data/raw/acumatica/sales_invoices.csv',
-        'raw_stock_items': '/opt/airflow/data/raw/acumatica/stock_items.csv'
+        'raw_stock_items': '/opt/airflow/data/raw/acumatica/stock_items.csv',
+        'raw_bills': '/opt/airflow/data/raw/acumatica/bill.csv',
+        'raw_vendors': '/opt/airflow/data/raw/acumatica/vendor.csv',
+        'raw_purchase_orders': '/opt/airflow/data/raw/acumatica/purchase_order.csv'
+
     }
     
     total_records = 0
@@ -222,13 +231,15 @@ def load_to_postgres_warehouse(config):
             print(f"   Loading {csv_path} to PostgreSQL...")
             df = pd.read_csv(csv_path)
             
-            with engine.begin() as conn:
-                try:
-                    # Try to truncate table if it exists
+            # ✅ FIXED: Handle each table in separate transaction
+            try:
+                # Try to truncate in separate transaction
+                with engine.begin() as conn:
                     conn.execute(text(f"TRUNCATE TABLE {table_name}"))
                     print(f"   Truncated existing table {table_name}")
-                    
-                    # Use append since table exists
+                
+                # Load data in separate transaction
+                with engine.begin() as conn:
                     df.to_sql(
                         name=table_name,
                         con=conn,
@@ -236,9 +247,11 @@ def load_to_postgres_warehouse(config):
                         index=False,
                         method='multi'
                     )
-                except Exception as truncate_error:
-                    # Table doesn't exist or truncate failed, create new table
-                    print(f"   Truncate failed, creating new table: {truncate_error}")
+                    
+            except Exception as truncate_error:
+                # Table doesn't exist, create new table
+                print(f"   Table doesn't exist, creating new: {truncate_error}")
+                with engine.begin() as conn:
                     df.to_sql(
                         name=table_name,
                         con=conn,
@@ -271,7 +284,12 @@ def load_to_snowflake_warehouse(config):
         'raw_customers': '/opt/airflow/data/raw/acumatica/customers.csv',
         'raw_sales_orders': '/opt/airflow/data/raw/acumatica/sales_orders.csv',
         'raw_sales_invoices': '/opt/airflow/data/raw/acumatica/sales_invoices.csv',
-        'raw_stock_items': '/opt/airflow/data/raw/acumatica/stock_items.csv'
+        'raw_stock_items': '/opt/airflow/data/raw/acumatica/stock_items.csv',
+        'raw_bills': '/opt/airflow/data/raw/acumatica/bill.csv',
+        'raw_vendors': '/opt/airflow/data/raw/acumatica/vendor.csv',
+        'raw_purchase_orders': '/opt/airflow/data/raw/acumatica/purchase_order.csv'
+
+
     }
     
     total_records = 0
@@ -314,7 +332,11 @@ def load_to_clickhouse_warehouse(config):
         'raw_customers': '/opt/airflow/data/raw/acumatica/customers.csv',
         'raw_sales_orders': '/opt/airflow/data/raw/acumatica/sales_orders.csv',
         'raw_sales_invoices': '/opt/airflow/data/raw/acumatica/sales_invoices.csv',
-        'raw_stock_items': '/opt/airflow/data/raw/acumatica/stock_items.csv'
+        'raw_stock_items': '/opt/airflow/data/raw/acumatica/stock_items.csv',
+        'raw_bills': '/opt/airflow/data/raw/acumatica/bill.csv',
+        'raw_vendors': '/opt/airflow/data/raw/acumatica/vendor.csv',
+        'raw_purchase_orders': '/opt/airflow/data/raw/acumatica/purchase_order.csv'
+
     }
     
     total_records = 0
@@ -400,10 +422,19 @@ def run_dbt_transformations(**context):
             'dbt run --select sales_invoices_raw',
             'dbt run --select sales_orders_raw',
             'dbt run --select stock_items_raw',
+
             'dbt run --select customers',
             'dbt run --select sales_invoices',
             'dbt run --select sales_orders',
-            'dbt run --select stock_items'
+            'dbt run --select stock_items',
+            'dbt run --select bills_raw',
+            'dbt run --select bills',
+
+            'dbt run --select vendors_raw',
+            'dbt run --select vendors',
+
+            'dbt run --select purchase_orders_raw',
+            'dbt run --select purchase_orders',
         ]
         
         for cmd in commands:
@@ -553,6 +584,136 @@ def check_transformed_data(**context):
             print(f"   Kit products: {row[7]}")
             print(f"   Average margin: {row[8]:.1f}%" if row[8] else "N/A")
         
+
+        # ✅ ADD THIS - Check bills data
+        print("\n📊 Checking bills data...")
+        with engine.connect() as conn:
+            result = conn.execute("""
+                SELECT 
+                    COUNT(*) as total_bills,
+                    COUNT(DISTINCT vendor_code) as unique_vendors,
+                    SUM(amount) as total_amount,
+                    SUM(balance) as total_outstanding,
+                    COUNT(CASE WHEN status_category = 'Open' THEN 1 END) as open_bills,
+                    COUNT(CASE WHEN status_category = 'Closed' THEN 1 END) as closed_bills,
+                    COUNT(CASE WHEN bill_category = 'Credit Adjustment' THEN 1 END) as credit_adjustments,
+                    COUNT(CASE WHEN bill_category = 'Regular Bill' THEN 1 END) as regular_bills,
+                    COUNT(CASE WHEN priority_status = 'Past Due' THEN 1 END) as past_due_bills,
+                    COUNT(CASE WHEN priority_status = 'Overdue 30+ Days' THEN 1 END) as overdue_bills,
+                    COUNT(CASE WHEN is_on_hold = true THEN 1 END) as bills_on_hold,
+                    COUNT(CASE WHEN amount_category = 'Very Large ($10K+)' THEN 1 END) as large_bills,
+                    COUNT(CASE WHEN payment_terms_category = 'Net 30 Days' THEN 1 END) as net30_bills,
+                    COUNT(CASE WHEN vendor_type = 'Vendor' THEN 1 END) as vendor_bills,
+                    COUNT(CASE WHEN vendor_type = 'Customer/Client' THEN 1 END) as customer_bills,
+                    AVG(data_completeness_score) as avg_completeness_score
+                FROM public.bills
+            """)
+            
+            row = result.fetchone()
+            print(f"📊 Bills Data Quality:")
+            print(f"   Total bills: {row[0]}")
+            print(f"   Unique vendors: {row[1]}")
+            print(f"   Total amount: ${row[2]:,.2f}" if row[2] else "N/A")
+            print(f"   Total outstanding: ${row[3]:,.2f}" if row[3] else "N/A")
+            print(f"   Open bills: {row[4]}")
+            print(f"   Closed bills: {row[5]}")
+            print(f"   Credit adjustments: {row[6]}")
+            print(f"   Regular bills: {row[7]}")
+            print(f"   Past due bills: {row[8]}")
+            print(f"   Overdue 30+ days: {row[9]}")
+            print(f"   Bills on hold: {row[10]}")
+            print(f"   Large bills ($10K+): {row[11]}")
+            print(f"   Net 30 bills: {row[12]}")
+            print(f"   Vendor bills: {row[13]}")
+            print(f"   Customer bills: {row[14]}")
+            print(f"   Avg completeness score: {row[15]:.1f}" if row[15] else "N/A")
+
+        # ✅ ADD THIS - Check vendors data
+        print("\n📊 Checking vendors data...")
+        with engine.connect() as conn:
+            result = conn.execute("""
+                SELECT 
+                    COUNT(*) as total_vendors,
+                    COUNT(DISTINCT vendor_code) as unique_vendor_codes,
+                    COUNT(CASE WHEN status_category = 'Active' THEN 1 END) as active_vendors,
+                    COUNT(CASE WHEN status_category = 'Inactive' THEN 1 END) as inactive_vendors,
+                    COUNT(CASE WHEN vendor_type = 'Cannabis Vendor' THEN 1 END) as cannabis_vendors,
+                    COUNT(CASE WHEN vendor_type = 'Service Provider' THEN 1 END) as service_providers,
+                    COUNT(CASE WHEN is_1099_vendor = true THEN 1 END) as vendors_1099,
+                    COUNT(CASE WHEN is_foreign_entity = true THEN 1 END) as foreign_vendors,
+                    COUNT(CASE WHEN payment_terms_category = 'Cash on Delivery' THEN 1 END) as cod_vendors,
+                    COUNT(CASE WHEN tax_classification = 'Cannabis Tax' THEN 1 END) as cannabis_tax_vendors,
+                    COUNT(CASE WHEN vendor_complexity = 'Complex (1099 + Foreign)' THEN 1 END) as complex_vendors,
+                    COUNT(CASE WHEN has_legal_name = true THEN 1 END) as vendors_with_legal_name,
+                    COUNT(CASE WHEN has_tax_id = true THEN 1 END) as vendors_with_tax_id,
+                    AVG(data_completeness_score) as avg_completeness_score
+                FROM public.vendors
+            """)
+            
+            row = result.fetchone()
+            print(f"📊 Vendors Data Quality:")
+            print(f"   Total vendors: {row[0]}")
+            print(f"   Unique vendor codes: {row[1]}")
+            print(f"   Active vendors: {row[2]}")
+            print(f"   Inactive vendors: {row[3]}")
+            print(f"   Cannabis vendors: {row[4]}")
+            print(f"   Service providers: {row[5]}")
+            print(f"   1099 vendors: {row[6]}")
+            print(f"   Foreign vendors: {row[7]}")
+            print(f"   COD vendors: {row[8]}")
+            print(f"   Cannabis tax vendors: {row[9]}")
+            print(f"   Complex vendors: {row[10]}")
+            print(f"   Vendors with legal name: {row[11]}")
+            print(f"   Vendors with tax ID: {row[12]}")
+            print(f"   Avg completeness score: {row[13]:.1f}" if row[13] else "N/A")
+
+        # ✅ ADD THIS - Check purchase orders data
+        print("\n📊 Checking purchase orders data...")
+        with engine.connect() as conn:
+            result = conn.execute("""
+                SELECT 
+                    COUNT(*) as total_orders,
+                    COUNT(DISTINCT vendor_id) as unique_vendors,
+                    COUNT(DISTINCT order_number) as unique_order_numbers,
+                    SUM(order_total) as total_order_value,
+                    AVG(order_total) as avg_order_value,
+                    COUNT(CASE WHEN status_category = 'Completed' THEN 1 END) as completed_orders,
+                    COUNT(CASE WHEN status_category = 'Open' THEN 1 END) as open_orders,
+                    COUNT(CASE WHEN status_category = 'Closed' THEN 1 END) as closed_orders,
+                    COUNT(CASE WHEN order_type_category = 'Normal Purchase' THEN 1 END) as normal_orders,
+                    COUNT(CASE WHEN order_type_category = 'Drop Ship' THEN 1 END) as dropship_orders,
+                    COUNT(CASE WHEN order_size_category = 'Very Large ($100K+)' THEN 1 END) as large_orders,
+                    COUNT(CASE WHEN priority_status = 'Overdue' THEN 1 END) as overdue_orders,
+                    COUNT(CASE WHEN priority_status = 'Due Soon' THEN 1 END) as due_soon_orders,
+                    COUNT(CASE WHEN product_category = 'Carts' THEN 1 END) as cart_orders,
+                    COUNT(CASE WHEN product_category = 'Packaging' THEN 1 END) as packaging_orders,
+                    COUNT(CASE WHEN tax_classification = 'Cannabis Tax' THEN 1 END) as cannabis_tax_orders,
+                    COUNT(CASE WHEN totals_match = true THEN 1 END) as orders_with_matching_totals,
+                    AVG(data_completeness_score) as avg_completeness_score
+                FROM public.purchase_orders
+            """)
+            
+            row = result.fetchone()
+            print(f"📊 Purchase Orders Data Quality:")
+            print(f"   Total orders: {row[0]}")
+            print(f"   Unique vendors: {row[1]}")
+            print(f"   Unique order numbers: {row[2]}")
+            print(f"   Total order value: ${row[3]:,.2f}" if row[3] else "N/A")
+            print(f"   Average order value: ${row[4]:,.2f}" if row[4] else "N/A")
+            print(f"   Completed orders: {row[5]}")
+            print(f"   Open orders: {row[6]}")
+            print(f"   Closed orders: {row[7]}")
+            print(f"   Normal orders: {row[8]}")
+            print(f"   Drop ship orders: {row[9]}")
+            print(f"   Large orders ($100K+): {row[10]}")
+            print(f"   Overdue orders: {row[11]}")
+            print(f"   Due soon orders: {row[12]}")
+            print(f"   Cart orders: {row[13]}")
+            print(f"   Packaging orders: {row[14]}")
+            print(f"   Cannabis tax orders: {row[15]}")
+            print(f"   Orders with matching totals: {row[16]}")
+            print(f"   Avg completeness score: {row[17]:.1f}" if row[17] else "N/A")
+
         engine.dispose()
         print("✅ All data quality checks completed successfully!")
         
@@ -560,6 +721,8 @@ def check_transformed_data(**context):
         print(f"❌ Data quality check failed: {e}")
         # Don't fail the pipeline if this is just a check issue
         print("⚠️  Continuing pipeline despite quality check failure")
+
+
 
 # ========================
 # TASK DEFINITIONS

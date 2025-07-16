@@ -75,6 +75,87 @@ sources:
           - name: ItemStatus
             description: Active, Inactive, Discontinued
 
+      - name: raw_bills
+        description: Bills data from Acumatica
+        columns:
+          - name: id
+            description: Unique bill identifier (GUID)
+          - name: Amount
+            description: Bill amount
+          - name: Date
+            description: Bill date (ISO format)
+          - name: DueDate
+            description: Due date (ISO format)
+          - name: Status
+            description: Bill status
+          - name: Type
+            description: Bill type
+          - name: Vendor
+            description: Vendor code
+          - name: VendorRef
+            description: Vendor reference
+          - name: Description
+            description: Bill description
+          - name: Balance
+            description: Outstanding balance
+          - name: Terms
+            description: Payment terms
+
+
+      - name: raw_vendors
+        description: Vendors data from Acumatica
+        columns:
+          - name: id
+            description: Unique vendor identifier (GUID)
+          - name: VendorID
+            description: Vendor code
+          - name: VendorName
+            description: Vendor name
+          - name: LegalName
+            description: Legal business name
+          - name: Status
+            description: Vendor status
+          - name: VendorClass
+            description: Vendor classification
+          - name: Terms
+            description: Payment terms
+          - name: PaymentMethod
+            description: Payment method
+          - name: TaxZone
+            description: Tax zone assignment
+          - name: CreatedDateTime
+            description: Creation timestamp
+          - name: LastModifiedDateTime
+            description: Last modification timestamp
+
+      - name: raw_purchase_orders
+        description: Purchase orders data from Acumatica
+        columns:
+          - name: id
+            description: Unique purchase order identifier (GUID)
+          - name: OrderNbr
+            description: Purchase order number
+          - name: VendorID
+            description: Vendor ID
+          - name: Date
+            description: Order date (ISO format)
+          - name: Status
+            description: Order status
+          - name: Type
+            description: Order type
+          - name: OrderTotal
+            description: Total order amount
+          - name: LineTotal
+            description: Line items total
+          - name: TaxTotal
+            description: Tax amount
+          - name: Description
+            description: Order description
+          - name: PromisedOn
+            description: Promised delivery date
+          - name: Terms
+            description: Payment terms
+
 models:
   - name: customers_raw
     description: Raw customer data with basic filtering and renaming
@@ -273,3 +354,494 @@ models:
         tests:
           - accepted_values:
               values: ['Battery', 'Live Rosin', 'Apparel', '710 Brand', 'Other']
+
+  - name: bills_raw
+    description: Raw bills data with basic filtering and renaming
+    columns:
+      - name: bill_id
+        description: Bill identifier
+        tests:
+          - not_null
+          - unique
+      - name: vendor_code
+        description: Vendor code
+        tests:
+          - not_null
+      - name: amount_raw
+        description: Raw bill amount
+      - name: date_raw
+        description: Raw bill date
+      - name: status_raw
+        description: Raw bill status
+
+  - name: bills
+    description: Cleaned and categorized bills data
+    columns:
+      - name: bill_id
+        description: Bill identifier
+        tests:
+          - not_null
+          - unique
+      - name: vendor_code
+        description: Vendor code
+        tests:
+          - not_null
+      - name: vendor_ref
+        description: Vendor reference
+      - name: amount
+        description: Bill amount
+        tests:
+          - not_null
+      - name: balance
+        description: Outstanding balance
+        tests:
+          - not_null
+      - name: tax_total
+        description: Tax amount
+        tests:
+          - not_null
+      - name: bill_date
+        description: Bill date
+        tests:
+          - not_null
+      - name: due_date
+        description: Due date
+      - name: is_approved_for_payment
+        description: Whether approved for payment
+        tests:
+          - not_null
+      - name: is_on_hold
+        description: Whether bill is on hold
+        tests:
+          - not_null
+      - name: is_tax_valid
+        description: Whether tax is valid
+        tests:
+          - not_null
+      - name: description
+        description: Bill description
+      - name: note
+        description: Bill notes
+      - name: status
+        description: Bill status
+      - name: bill_type
+        description: Bill type
+      - name: payment_terms
+        description: Payment terms
+      - name: days_to_due
+        description: Days from bill date to due date
+      - name: days_past_due
+        description: Days past due (negative if not due yet)
+      - name: bill_category
+        description: Categorized bill type
+        tests:
+          - accepted_values:
+              values: ['Credit Adjustment', 'Regular Bill', 'Debit Adjustment', 'Other']
+      - name: status_category
+        description: Categorized status
+        tests:
+          - accepted_values:
+              values: ['Closed', 'Open', 'Paid', 'Other']
+      - name: amount_category
+        description: Amount categorization
+        tests:
+          - accepted_values:
+              values: ['Zero Amount', 'Small (< $100)', 'Medium ($100-$1K)', 'Large ($1K-$10K)', 'Very Large ($10K+)']
+      - name: balance_status
+        description: Balance status
+        tests:
+          - accepted_values:
+              values: ['Fully Paid', 'Outstanding Balance', 'Credit Balance']
+      - name: payment_terms_category
+        description: Payment terms categorization
+        tests:
+          - accepted_values:
+              values: ['Cash on Delivery', 'Net 15 Days', 'Net 30 Days', 'Net 60 Days', 'Net 7 Days', 'No Terms', 'Other Terms']
+      - name: priority_status
+        description: Priority classification
+        tests:
+          - accepted_values:
+              values: ['On Hold', 'Overdue 30+ Days', 'Past Due', 'Open', 'Standard']
+      - name: vendor_type
+        description: Vendor type classification
+        tests:
+          - accepted_values:
+              values: ['Vendor', 'Customer/Client', 'Other']
+      - name: has_description
+        description: Whether bill has description
+        tests:
+          - not_null
+      - name: has_note
+        description: Whether bill has notes
+        tests:
+          - not_null
+      - name: has_vendor_ref
+        description: Whether bill has vendor reference
+        tests:
+          - not_null
+      - name: has_tax
+        description: Whether bill has tax amount
+        tests:
+          - not_null
+      - name: data_completeness_score
+        description: Data completeness score (0-100)
+      - name: extracted_at
+        description: Timestamp when data was extracted
+      - name: source_system
+        description: Source system identifier
+
+  - name: vendors_raw
+    description: Raw vendors data with basic filtering and renaming
+    columns:
+      - name: vendor_id
+        description: Vendor identifier
+        tests:
+          - not_null
+          - unique
+      - name: vendor_code
+        description: Vendor code
+        tests:
+          - not_null
+      - name: vendor_name
+        description: Vendor name
+        tests:
+          - not_null
+      - name: status_raw
+        description: Raw vendor status
+      - name: vendor_class
+        description: Vendor classification
+
+  - name: vendors
+    description: Cleaned and categorized vendors data
+    columns:
+      - name: vendor_id
+        description: Vendor identifier
+        tests:
+          - not_null
+          - unique
+      - name: vendor_code
+        description: Vendor code
+        tests:
+          - not_null
+          - unique
+      - name: vendor_name
+        description: Vendor name
+        tests:
+          - not_null
+      - name: legal_name
+        description: Legal business name
+      - name: account_ref
+        description: Account reference
+      - name: status
+        description: Vendor status
+      - name: vendor_class
+        description: Vendor classification
+      - name: is_1099_vendor
+        description: Whether vendor requires 1099 reporting
+        tests:
+          - not_null
+      - name: is_foreign_entity
+        description: Whether vendor is foreign entity
+        tests:
+          - not_null
+      - name: is_landed_cost_vendor
+        description: Whether vendor is landed cost vendor
+        tests:
+          - not_null
+      - name: is_labor_union
+        description: Whether vendor is labor union
+        tests:
+          - not_null
+      - name: is_tax_agency
+        description: Whether vendor is tax agency
+        tests:
+          - not_null
+      - name: pay_separately
+        description: Whether to pay separately
+        tests:
+          - not_null
+      - name: print_orders
+        description: Whether to print orders
+        tests:
+          - not_null
+      - name: send_orders_by_email
+        description: Whether to send orders by email
+        tests:
+          - not_null
+      - name: payment_terms
+        description: Payment terms
+      - name: payment_method
+        description: Payment method
+      - name: payment_by
+        description: Payment by setting
+      - name: currency_id
+        description: Currency ID
+      - name: max_receipt_amount
+        description: Maximum receipt amount
+      - name: min_receipt_amount
+        description: Minimum receipt amount
+      - name: threshold_receipt_amount
+        description: Receipt threshold amount
+      - name: lead_time_days
+        description: Lead time in days
+      - name: payment_lead_time_days
+        description: Payment lead time in days
+      - name: receipt_action
+        description: Receipt action setting
+      - name: shipping_terms
+        description: Shipping terms
+      - name: ship_via
+        description: Shipping method
+      - name: warehouse
+        description: Default warehouse
+      - name: tax_zone
+        description: Tax zone
+      - name: tax_registration_id
+        description: Tax registration ID
+      - name: f1099_box
+        description: 1099 box assignment
+      - name: created_datetime
+        description: Creation timestamp
+      - name: last_modified_datetime
+        description: Last modification timestamp
+      - name: note
+        description: Vendor notes
+      - name: status_category
+        description: Categorized status
+        tests:
+          - accepted_values:
+              values: ['Active', 'Inactive', 'On Hold', 'Other']
+      - name: vendor_type
+        description: Vendor type classification
+        tests:
+          - accepted_values:
+              values: ['Cannabis Vendor', 'Service Provider', 'Supply Vendor', 'Unclassified', 'Other Class']
+      - name: vendor_code_type
+        description: Vendor code type analysis
+        tests:
+          - accepted_values:
+              values: ['Vendor', 'Customer/Client', 'Other']
+      - name: payment_terms_category
+        description: Payment terms categorization
+        tests:
+          - accepted_values:
+              values: ['Cash on Delivery', 'Net 15 Days', 'Net 30 Days', 'Net 60 Days', 'Net 7 Days', 'No Terms', 'Other Terms']
+      - name: tax_classification
+        description: Tax classification
+        tests:
+          - accepted_values:
+              values: ['Cannabis Tax', 'Tax Exempt', 'No Tax Zone', 'Other Tax Zone']
+      - name: receipt_threshold_category
+        description: Receipt threshold categorization
+        tests:
+          - accepted_values:
+              values: ['Standard ($100)', 'Low Threshold', 'High Threshold', 'Not Set']
+      - name: vendor_complexity
+        description: Vendor complexity classification
+        tests:
+          - accepted_values:
+              values: ['Complex (1099 + Foreign)', 'Tax Reporting Required', 'Foreign Entity', 'Special Entity', 'Standard Vendor']
+      - name: has_legal_name
+        description: Whether vendor has legal name
+        tests:
+          - not_null
+      - name: has_notes
+        description: Whether vendor has notes
+        tests:
+          - not_null
+      - name: has_tax_id
+        description: Whether vendor has tax ID
+        tests:
+          - not_null
+      - name: has_parent_account
+        description: Whether vendor has parent account
+        tests:
+          - not_null
+      - name: has_lead_time
+        description: Whether vendor has lead time set
+        tests:
+          - not_null
+      - name: data_completeness_score
+        description: Data completeness score (0-100)
+      - name: extracted_at
+        description: Timestamp when data was extracted
+      - name: source_system
+        description: Source system identifier
+
+  - name: purchase_orders_raw
+    description: Raw purchase orders data with basic filtering and renaming
+    columns:
+      - name: purchase_order_id
+        description: Purchase order identifier
+        tests:
+          - not_null
+          - unique
+      - name: order_number
+        description: Purchase order number
+        tests:
+          - not_null
+      - name: vendor_id
+        description: Vendor ID
+        tests:
+          - not_null
+      - name: order_total_raw
+        description: Raw order total
+      - name: date_raw
+        description: Raw order date
+      - name: status_raw
+        description: Raw order status
+
+  - name: purchase_orders
+    description: Cleaned and categorized purchase orders data
+    columns:
+      - name: purchase_order_id
+        description: Purchase order identifier
+        tests:
+          - not_null
+          - unique
+      - name: order_number
+        description: Purchase order number
+        tests:
+          - not_null
+          - unique
+      - name: vendor_id
+        description: Vendor ID
+        tests:
+          - not_null
+      - name: vendor_ref
+        description: Vendor reference
+      - name: owner
+        description: Order owner
+      - name: control_total
+        description: Control total amount
+        tests:
+          - not_null
+      - name: line_total
+        description: Line items total
+        tests:
+          - not_null
+      - name: order_total
+        description: Total order amount
+        tests:
+          - not_null
+      - name: tax_total
+        description: Tax amount
+        tests:
+          - not_null
+      - name: currency_id
+        description: Currency ID
+      - name: base_currency_id
+        description: Base currency ID
+      - name: currency_rate
+        description: Currency exchange rate
+      - name: order_date
+        description: Order date
+        tests:
+          - not_null
+      - name: promised_date
+        description: Promised delivery date
+      - name: last_modified_datetime
+        description: Last modification timestamp
+      - name: is_on_hold
+        description: Whether order is on hold
+        tests:
+          - not_null
+      - name: is_tax_valid
+        description: Whether tax is valid
+        tests:
+          - not_null
+      - name: description
+        description: Order description
+      - name: note
+        description: Order notes
+      - name: status
+        description: Order status
+      - name: order_type
+        description: Order type
+      - name: payment_terms
+        description: Payment terms
+      - name: branch
+        description: Branch
+      - name: location
+        description: Location
+      - name: vendor_tax_zone
+        description: Vendor tax zone
+      - name: days_to_promise
+        description: Days from order to promised date
+      - name: days_since_promise
+        description: Days since promised date
+      - name: status_category
+        description: Categorized status
+        tests:
+          - accepted_values:
+              values: ['Completed', 'Closed', 'Open', 'Cancelled', 'Other']
+      - name: order_type_category
+        description: Order type categorization
+        tests:
+          - accepted_values:
+              values: ['Normal Purchase', 'Drop Ship', 'Blanket Order', 'Other Type']
+      - name: order_size_category
+        description: Order size categorization
+        tests:
+          - accepted_values:
+              values: ['Zero Amount', 'Small (< $1K)', 'Medium ($1K-$10K)', 'Large ($10K-$100K)', 'Very Large ($100K+)']
+      - name: payment_terms_category
+        description: Payment terms categorization
+        tests:
+          - accepted_values:
+              values: ['Cash on Delivery', 'Net 30 Days', 'Net 15 Days', 'Net 60 Days', 'No Terms', 'Other Terms']
+      - name: tax_classification
+        description: Tax classification
+        tests:
+          - accepted_values:
+              values: ['Tax Exempt', 'Cannabis Tax', 'No Tax Zone', 'Other Tax Zone']
+      - name: priority_status
+        description: Priority classification
+        tests:
+          - accepted_values:
+              values: ['On Hold', 'Overdue', 'Due Soon', 'Active', 'Standard']
+      - name: vendor_type
+        description: Vendor type classification
+        tests:
+          - accepted_values:
+              values: ['Vendor', 'Customer/Client', 'Other']
+      - name: product_category
+        description: Product category based on description
+        tests:
+          - accepted_values:
+              values: ['Carts', 'Packaging', 'Labels', 'Glass/Tubes', 'Bags/Mylar', 'No Description', 'Other Products']
+      - name: currency_type
+        description: Currency type classification
+        tests:
+          - accepted_values:
+              values: ['US Dollar', 'No Currency', 'Other Currency']
+      - name: has_description
+        description: Whether order has description
+        tests:
+          - not_null
+      - name: has_note
+        description: Whether order has notes
+        tests:
+          - not_null
+      - name: has_vendor_ref
+        description: Whether order has vendor reference
+        tests:
+          - not_null
+      - name: has_promised_date
+        description: Whether order has promised date
+        tests:
+          - not_null
+      - name: has_tax
+        description: Whether order has tax amount
+        tests:
+          - not_null
+      - name: totals_match
+        description: Whether order total matches line + tax totals
+        tests:
+          - not_null
+      - name: data_completeness_score
+        description: Data completeness score (0-100)
+      - name: extracted_at
+        description: Timestamp when data was extracted
+      - name: source_system
+        description: Source system identifier
