@@ -25,6 +25,16 @@ def generate_docker_compose():
             'AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=true',
             'AIRFLOW__CORE__LOAD_EXAMPLES=false',
             'AIRFLOW__API__AUTH_BACKENDS=airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session',
+            
+            # SMTP Configuration for Email Notifications
+            'AIRFLOW__SMTP__SMTP_HOST=${SMTP_HOST:-smtp.gmail.com}',
+            'AIRFLOW__SMTP__SMTP_STARTTLS=True',
+            'AIRFLOW__SMTP__SMTP_SSL=False',
+            'AIRFLOW__SMTP__SMTP_PORT=${SMTP_PORT:-587}',
+            'AIRFLOW__SMTP__SMTP_USER=${SMTP_USER}',
+            'AIRFLOW__SMTP__SMTP_PASSWORD=${SMTP_PASSWORD}',
+            'AIRFLOW__SMTP__SMTP_MAIL_FROM=${SMTP_FROM_EMAIL}',
+            
             # Acumatica Configuration
             'ACUMATICA_BASE_URL=${ACUMATICA_BASE_URL}',
             'ACUMATICA_USERNAME=${ACUMATICA_USERNAME}',
@@ -278,6 +288,7 @@ def generate_docker_compose():
         print(f"   Services: {list(services.keys())}")
         print(f"   Packages: {packages}")
         print(f"   🔐 Using environment variables for credentials")
+        print(f"   📧 SMTP configuration included")
         
         return True
         

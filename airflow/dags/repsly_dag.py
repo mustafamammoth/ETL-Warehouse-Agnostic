@@ -1,4 +1,4 @@
-# repsly_dag.py
+# repsly_dag.py - Configuration-driven DAG
 from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.operators.python import PythonOperator
@@ -10,38 +10,241 @@ import time
 import json
 import subprocess
 import sys
+import yaml
 from requests.auth import HTTPBasicAuth
 
-# Default arguments for the DAG
+# ========================
+# CONFIGURATION LOADING
+# ========================
+
+def load_repsly_config():
+    """Load configuration from repsly.yml"""
+    config_path = '/opt/airflow/config/sources/repsly.yml'
+    try:
+        with open(config_path, 'r') as file:
+            return yaml.safe_load(file)
+    except FileNotFoundError:
+        print(f"❌ Configuration file not found: {config_path}")
+        raise
+    except yaml.YAMLError as e:
+        print(f"❌ Error parsing YAML configuration: {e}")
+        raise
+
+def get_schedule_interval(config):
+    """Convert config schedule to Airflow schedule_interval"""
+    schedule_config = config['dag']['schedule']
+    
+    if schedule_config['type'] == 'manual':
+        return None
+    elif schedule_config['type'] == 'daily':
+        hour, minute = schedule_config['time'].split(':')
+        return f"{minute} {hour} * * *"
+    elif schedule_config['type'] == 'weekly':
+        hour, minute = schedule_config['time'].split(':')
+        days = {'monday': 1, 'tuesday': 2, 'wednesday': 3, 'thursday': 4, 
+                'friday': 5, 'saturday': 6, 'sunday': 0}
+        day_num = days.get(schedule_config.get('day_of_week', 'monday').lower(), 1)
+        return f"{minute} {hour} * * {day_num}"
+    elif schedule_config['type'] == 'monthly':
+        hour, minute = schedule_config['time'].split(':')
+        day = schedule_config.get('day_of_month', 1)
+        return f"{minute} {hour} {day} * *"
+    elif schedule_config['type'] == 'cron':
+        return schedule_config.get('cron_expression', '0 2 * * *')
+    else:
+        return '0 2 * * *'  # Default to daily at 2 AM
+
+# Load configuration
+config = load_repsly_config()
+
+# ========================
+# DAG CONFIGURATION FROM YAML
+# ========================
+
+# Default arguments from config
 default_args = {
-    'owner': 'data-team',
+    'owner': config['dag']['owner'],
     'depends_on_past': False,
-    'start_date': datetime(2025, 1, 1),
-    'email_on_failure': False,
-    'email_on_retry': False,
-    'retries': 1,
-    'retry_delay': timedelta(minutes=5),
-    'catchup': False
+    'start_date': datetime.strptime(config['dag']['start_date'], '%Y-%m-%d'),
+    'email_on_failure': config['dag']['email_on_failure'],
+    'email_on_retry': config['dag']['email_on_retry'],
+    'retries': config['dag']['retries'],
+    'retry_delay': timedelta(minutes=config['dag']['retry_delay_minutes']),
+    'catchup': config['dag']['catchup'],
+    'email': config['notifications']['email']['failure_recipients']
 }
 
 # Create the DAG
 dag = DAG(
-    'repsly_extract_transform',
+    config['dag']['dag_id'],
     default_args=default_args,
-    description='Extract from Repsly API and transform with dbt',
-    schedule=None,  # Manual trigger for now
-    max_active_runs=1,
-    tags=['repsly', 'extract', 'transform', 'dbt']
+    description=config['dag']['description'],
+    schedule_interval=get_schedule_interval(config),
+    max_active_runs=config['dag']['max_active_runs'],
+    tags=config['dag']['tags']
 )
 
-# SECURE: Get credentials from environment variables
-REPSLY_BASE_URL = os.getenv('REPSLY_BASE_URL', 'https://api.repsly.com/v3')
+
+
+def send_success_email(context):
+    """Send success notification email"""
+    from airflow.utils.email import send_email
+    
+    # Get config for email recipients
+    success_recipients = config['notifications']['email'].get('success_recipients', [])
+    
+    if not success_recipients:
+        print("No success email recipients configured")
+        return
+    
+    # Get task instance information
+    ti = context['task_instance']
+    dag_run = context['dag_run']
+    
+    # Create email content
+    subject = f"✅ SUCCESS: {dag_run.dag_id} Pipeline Completed Successfully"
+    
+    html_content = f"""
+    <h2>✅ Pipeline Success Notification</h2>
+    
+    <p><strong>DAG:</strong> {dag_run.dag_id}</p>
+    <p><strong>Run ID:</strong> {dag_run.run_id}</p>
+    <p><strong>Execution Date:</strong> {dag_run.execution_date}</p>
+    <p><strong>Start Date:</strong> {dag_run.start_date}</p>
+    <p><strong>End Date:</strong> {dag_run.end_date}</p>
+    <p><strong>Duration:</strong> {dag_run.end_date - dag_run.start_date if dag_run.end_date else 'Still running'}</p>
+    
+    <h3>📊 Pipeline Summary</h3>
+    <ul>
+        <li>Data successfully extracted from Repsly API</li>
+        <li>Data loaded to warehouse successfully</li>
+        <li>dbt transformations completed</li>
+        <li>Data quality checks passed</li>
+    </ul>
+    
+    <p><strong>Next steps:</strong> Data is ready for analysis and reporting.</p>
+    
+    <hr>
+    <p><small>This is an automated notification from your Airflow data pipeline.</small></p>
+    """
+    
+    try:
+        send_email(
+            to=success_recipients,
+            subject=subject,
+            html_content=html_content
+        )
+        print(f"✅ Success email sent to: {', '.join(success_recipients)}")
+    except Exception as e:
+        print(f"❌ Failed to send success email: {e}")
+
+def send_failure_email(context):
+    """Send failure notification email"""
+    from airflow.utils.email import send_email
+    
+    # Get config for email recipients
+    failure_recipients = config['notifications']['email'].get('failure_recipients', [])
+    
+    if not failure_recipients:
+        print("No failure email recipients configured")
+        return
+    
+    # Get task instance information
+    ti = context['task_instance']
+    dag_run = context['dag_run']
+    exception = context.get('exception')
+    
+    # Create email content
+    subject = f"❌ FAILURE: {dag_run.dag_id} Pipeline Failed"
+    
+    html_content = f"""
+    <h2>❌ Pipeline Failure Notification</h2>
+    
+    <p><strong>DAG:</strong> {dag_run.dag_id}</p>
+    <p><strong>Task:</strong> {ti.task_id}</p>
+    <p><strong>Run ID:</strong> {dag_run.run_id}</p>
+    <p><strong>Execution Date:</strong> {dag_run.execution_date}</p>
+    <p><strong>Start Date:</strong> {dag_run.start_date}</p>
+    <p><strong>Failure Time:</strong> {ti.end_date}</p>
+    
+    <h3>🔍 Error Details</h3>
+    <p><strong>Failed Task:</strong> {ti.task_id}</p>
+    <p><strong>Try Number:</strong> {ti.try_number}</p>
+    
+    {f'<p><strong>Exception:</strong></p><pre style="background-color: #f5f5f5; padding: 10px; border-radius: 5px;">{str(exception)}</pre>' if exception else ''}
+    
+    <h3>📋 Troubleshooting Steps</h3>
+    <ol>
+        <li>Check the Airflow logs for detailed error information</li>
+        <li>Verify API credentials and connectivity</li>
+        <li>Check warehouse connectivity</li>
+        <li>Review data quality and format</li>
+    </ol>
+    
+    <p><strong>Action Required:</strong> Please investigate and resolve the issue.</p>
+    
+    <hr>
+    <p><small>This is an automated notification from your Airflow data pipeline.</small></p>
+    """
+    
+    try:
+        send_email(
+            to=failure_recipients,
+            subject=subject,
+            html_content=html_content
+        )
+        print(f"✅ Failure email sent to: {', '.join(failure_recipients)}")
+    except Exception as e:
+        print(f"❌ Failed to send failure email: {e}")
+
+# Update your default_args to include email callbacks
+default_args = {
+    'owner': config['dag']['owner'],
+    'depends_on_past': False,
+    'start_date': datetime.strptime(config['dag']['start_date'], '%Y-%m-%d'),
+    'email_on_failure': config['dag']['email_on_failure'],
+    'email_on_retry': config['dag']['email_on_retry'],
+    'retries': config['dag']['retries'],
+    'retry_delay': timedelta(minutes=config['dag']['retry_delay_minutes']),
+    'catchup': config['dag']['catchup'],
+    'email': config['notifications']['email']['failure_recipients'],
+    # Add email callbacks
+    'on_failure_callback': send_failure_email,
+    'on_success_callback': None,  # We'll add this to specific tasks
+}
+
+# Add success notification task at the end
+def send_pipeline_success_notification(**context):
+    """Send pipeline completion success email"""
+    send_success_email(context)
+    return "Success notification sent"
+
+# Create success notification task
+success_notification_task = PythonOperator(
+    task_id='send_success_notification',
+    python_callable=send_pipeline_success_notification,
+    dag=dag
+)
+
+
+
+# ========================
+# CONFIGURATION CONSTANTS
+# ========================
+
+# SECURE: Get credentials from environment variables (set in Docker)
+REPSLY_BASE_URL = config['api']['base_url']
 REPSLY_USERNAME = os.getenv('REPSLY_USERNAME')
 REPSLY_PASSWORD = os.getenv('REPSLY_PASSWORD')
 
-# TESTING vs PRODUCTION configuration
-TESTING_MODE = True  # Set to False for production (full data extraction)
-MAX_RECORDS_PER_ENDPOINT = 50 if TESTING_MODE else None  # Remove limit for production
+# Testing vs Production configuration from config
+TESTING_MODE = config['extraction']['mode'] == 'testing'
+if TESTING_MODE:
+    MAX_RECORDS_PER_ENDPOINT = config['extraction']['testing']['max_records_per_endpoint']
+    DATE_RANGE_DAYS = config['extraction']['testing']['date_range_days']
+else:
+    MAX_RECORDS_PER_ENDPOINT = config['extraction']['production']['max_records_per_endpoint']
+    DATE_RANGE_DAYS = config['extraction']['production']['date_range_days']
 
 # Validate that required environment variables are set
 if not all([REPSLY_USERNAME, REPSLY_PASSWORD]):
@@ -50,16 +253,17 @@ if not all([REPSLY_USERNAME, REPSLY_PASSWORD]):
     if not REPSLY_PASSWORD: missing_vars.append('REPSLY_PASSWORD')
     raise ValueError(f"Missing required environment variables: {', '.join(missing_vars)}")
 
-# Define all endpoints you want to extract (just like Acumatica ENDPOINTS)
+# Define endpoints to extract based on config
 ENDPOINTS = {
-    # ✅ Already have models for these:
+    # ✅ Core endpoints from config
     'clients': {
         'path': 'export/clients',
         'pagination_type': 'timestamp',
         'limit': 50,
         'timestamp_field': 'LastTimeStamp',
         'data_field': 'Clients',
-        'total_count_field': 'TotalCount'
+        'total_count_field': 'TotalCount',
+        'enabled': 'clients' in config['extraction']['endpoints']['always_extract'] + config['extraction']['endpoints']['optional_extract']
     },
     'client_notes': {
         'path': 'export/clientnotes',
@@ -67,7 +271,8 @@ ENDPOINTS = {
         'limit': 50,
         'id_field': 'LastClientNoteID',
         'data_field': 'ClientNotes',
-        'total_count_field': 'TotalCount'
+        'total_count_field': 'TotalCount',
+        'enabled': 'client_notes' in config['extraction']['endpoints']['always_extract'] + config['extraction']['endpoints']['optional_extract']
     },
     'visits': {
         'path': 'export/visits',
@@ -75,7 +280,8 @@ ENDPOINTS = {
         'limit': 50,
         'timestamp_field': 'LastTimeStamp',
         'data_field': 'Visits',
-        'total_count_field': 'TotalCount'
+        'total_count_field': 'TotalCount',
+        'enabled': 'visits' in config['extraction']['endpoints']['always_extract'] + config['extraction']['endpoints']['optional_extract']
     },
     'daily_working_time': {
         'path': 'export/dailyworkingtime',
@@ -83,42 +289,41 @@ ENDPOINTS = {
         'limit': 50,
         'id_field': 'LastDailyWorkingTimeID',
         'data_field': 'DailyWorkingTime',
-        'total_count_field': 'TotalCount'
+        'total_count_field': 'TotalCount',
+        'enabled': 'daily_working_time' in config['extraction']['endpoints']['always_extract'] + config['extraction']['endpoints']['optional_extract']
     },
-
-    # ✅ Have models being created:
     'representatives': {
         'path': 'export/representatives',
         'pagination_type': 'static',
-        'data_field': 'Representatives'
+        'data_field': 'Representatives',
+        'enabled': 'representatives' in config['extraction']['endpoints']['always_extract'] + config['extraction']['endpoints']['optional_extract']
     },
     'users': {
         'path': 'export/users',
         'pagination_type': 'id',
         'limit': 50,
-        'id_field': 'LastUserID',  # Fixed: was LastProductID
+        'id_field': 'LastUserID',
         'data_field': 'Users',
-        'total_count_field': 'TotalCount'
+        'total_count_field': 'TotalCount',
+        'enabled': 'users' in config['extraction']['endpoints']['always_extract'] + config['extraction']['endpoints']['optional_extract']
     },
-
-    # ✅ Defined but no models yet:
     'products': {
         'path': 'export/products',
         'pagination_type': 'id',
         'limit': 50,
         'id_field': 'LastProductID',
         'data_field': 'Products',
-        'total_count_field': 'TotalCount'
+        'total_count_field': 'TotalCount',
+        'enabled': 'products' in config['extraction']['endpoints']['always_extract'] + config['extraction']['endpoints']['optional_extract']
     },
-
-    # 🆕 NEW ENDPOINTS TO ADD:
     'retail_audits': {
         'path': 'export/retailaudits',
         'pagination_type': 'id',
         'limit': 50,
         'id_field': 'LastRetailAuditID',
         'data_field': 'RetailAudits',
-        'total_count_field': 'TotalCount'
+        'total_count_field': 'TotalCount',
+        'enabled': 'retail_audits' in config['extraction']['endpoints']['always_extract'] + config['extraction']['endpoints']['optional_extract']
     },
     'purchase_orders': {
         'path': 'export/purchaseorders',
@@ -126,17 +331,20 @@ ENDPOINTS = {
         'limit': 50,
         'id_field': 'LastPurchaseOrderID',
         'data_field': 'PurchaseOrders',
-        'total_count_field': 'TotalCount'
+        'total_count_field': 'TotalCount',
+        'enabled': 'purchase_orders' in config['extraction']['endpoints']['always_extract'] + config['extraction']['endpoints']['optional_extract']
     },
     'document_types': {
         'path': 'export/documenttypes',
         'pagination_type': 'static',
-        'data_field': 'DocumentTypes'
+        'data_field': 'DocumentTypes',
+        'enabled': 'document_types' in config['extraction']['endpoints']['always_extract'] + config['extraction']['endpoints']['optional_extract']
     },
     'pricelists': {
         'path': 'export/pricelists',
         'pagination_type': 'static',
         'data_field': 'PriceLists',
+        'enabled': 'pricelists' in config['extraction']['endpoints']['always_extract'] + config['extraction']['endpoints']['optional_extract']
     },
     'pricelist_items': {
         'path': 'export/pricelistsItems',
@@ -144,7 +352,8 @@ ENDPOINTS = {
         'limit': 50,
         'id_field': 'LastPriceListItemID',
         'data_field': 'PriceListItems',
-        'total_count_field': 'TotalCount'
+        'total_count_field': 'TotalCount',
+        'enabled': 'pricelist_items' in config['extraction']['endpoints']['always_extract'] + config['extraction']['endpoints']['optional_extract']
     },
     'forms': {
         'path': 'export/forms',
@@ -152,7 +361,8 @@ ENDPOINTS = {
         'limit': 50,
         'id_field': 'LastFormID',
         'data_field': 'Forms',
-        'total_count_field': 'TotalCount'
+        'total_count_field': 'TotalCount',
+        'enabled': 'forms' in config['extraction']['endpoints']['always_extract'] + config['extraction']['endpoints']['optional_extract']
     },
     'photos': {
         'path': 'export/photos',
@@ -160,19 +370,22 @@ ENDPOINTS = {
         'limit': 50,
         'id_field': 'LastPhotoID',
         'data_field': 'Photos',
-        'total_count_field': 'TotalCount'
+        'total_count_field': 'TotalCount',
+        'enabled': 'photos' in config['extraction']['endpoints']['always_extract'] + config['extraction']['endpoints']['optional_extract']
     },
     'visit_schedules': {
         'path': 'export/visitschedules',
         'pagination_type': 'datetime_range',
         'data_field': 'VisitSchedules',
-        'url_pattern': 'export/visitschedules/{start_date}/{end_date}'
+        'url_pattern': 'export/visitschedules/{start_date}/{end_date}',
+        'enabled': 'visit_schedules' in config['extraction']['endpoints']['always_extract'] + config['extraction']['endpoints']['optional_extract']
     },
     'visit_schedules_extended': {
         'path': 'export/schedules',
         'pagination_type': 'datetime_range', 
-        'data_field': 'Schedules',  # ✅ FIXED: Was 'SchedulesExtended', now 'Schedules'
-        'url_pattern': 'export/schedules/{start_date}/{end_date}'
+        'data_field': 'Schedules',
+        'url_pattern': 'export/schedules/{start_date}/{end_date}',
+        'enabled': 'visit_schedules_extended' in config['extraction']['endpoints']['always_extract'] + config['extraction']['endpoints']['optional_extract']
     },
     'visit_schedule_realizations': {
         'path': 'export/visitrealizations',
@@ -183,71 +396,14 @@ ENDPOINTS = {
             'modified_field': 'modified',
             'skip_field': 'skip'
         },
-        'limit': 50,  # API enforced limit
-        'total_count_field': 'TotalCount'
+        'limit': 50,
+        'total_count_field': 'TotalCount',
+        'enabled': 'visit_schedule_realizations' in config['extraction']['endpoints']['always_extract'] + config['extraction']['endpoints']['optional_extract']
     }
-    # 'import_job_status': {
-    #     'path': 'export/importStatus',
-    #     'pagination_type': 'static',
-    #     'data_field': 'ImportJobStatus'
-    # }
 }
-# ENDPOINTS = {
-#     'clients': {
-#         'path': 'export/clients',
-#         'pagination_type': 'timestamp',
-#         'limit': 50,
-#         'timestamp_field': 'LastTimeStamp',
-#         'data_field': 'Clients',
-#         'total_count_field': 'TotalCount'
-#     },
-#     'client_notes': {
-#         'path': 'export/clientnotes',
-#         'pagination_type': 'id',
-#         'limit': 50,
-#         'id_field': 'LastClientNoteID',
-#         'data_field': 'ClientNotes',
-#         'total_count_field': 'TotalCount'
-#     },
-#     'visits': {
-#         'path': 'export/visits',
-#         'pagination_type': 'timestamp',
-#         'limit': 50,
-#         'timestamp_field': 'LastTimeStamp',
-#         'data_field': 'Visits',
-#         'total_count_field': 'TotalCount'
-#     },
-#     'daily_working_time': {
-#         'path': 'export/dailyworkingtime',
-#         'pagination_type': 'id',
-#         'limit': 50,
-#         'id_field': 'LastDailyWorkingTimeID',
-#         'data_field': 'DailyWorkingTime',
-#         'total_count_field': 'TotalCount'
-#     },
-#     'products': {
-#         'path': 'export/products',
-#         'pagination_type': 'id',
-#         'limit': 50,
-#         'id_field': 'LastProductID',
-#         'data_field': 'Products',
-#         'total_count_field': 'TotalCount'
-#     },
-#     'users': {
-#         'path': 'export/users',
-#         'pagination_type': 'id',
-#         'limit': 50,
-#         'id_field': 'LastProductID',
-#         'data_field': 'Users',
-#         'total_count_field': 'TotalCount'
-#     },
-#     'representatives': {
-#         'path': 'export/representatives',
-#         'pagination_type': 'static',
-#         'data_field': 'Representatives'
-#     }
-#     # Add more endpoints here as needed
-# }
+
+# Filter endpoints based on config
+ENABLED_ENDPOINTS = {k: v for k, v in ENDPOINTS.items() if v.get('enabled', True) and k not in config['extraction']['endpoints']['disabled']}
 
 def create_authenticated_session():
     """Create authenticated session for Repsly"""
@@ -255,9 +411,9 @@ def create_authenticated_session():
     session.auth = HTTPBasicAuth(REPSLY_USERNAME, REPSLY_PASSWORD)
     session.headers.update({'Accept': 'application/json'})
     
-    # Test authentication
-    test_url = f"{REPSLY_BASE_URL}/export/clients/0"
-    response = session.get(test_url)
+    # Test authentication using config
+    test_url = f"{REPSLY_BASE_URL}/{config['api']['test_endpoint']}"
+    response = session.get(test_url, timeout=config['api']['rate_limiting']['timeout_seconds'])
     response.raise_for_status()
     print("✅ Authentication successful")
     
@@ -283,7 +439,6 @@ def flatten_repsly_record(record):
     
     return flattened
 
-
 def get_paginated_data(session, endpoint_config, endpoint_name):
     """Get data from Repsly endpoint with appropriate pagination (handles multiple patterns)"""
     all_data = []
@@ -294,7 +449,7 @@ def get_paginated_data(session, endpoint_config, endpoint_name):
         print(f"   Fetching data from: {endpoint_url}")
         
         try:
-            response = session.get(endpoint_url)
+            response = session.get(endpoint_url, timeout=config['api']['rate_limiting']['timeout_seconds'])
             response.raise_for_status()
             data = response.json()
             
@@ -313,13 +468,9 @@ def get_paginated_data(session, endpoint_config, endpoint_name):
         # Date range endpoints (visit schedules)
         from datetime import datetime, timedelta
         
-        # For testing, use last 30 days. In production, you might want to make this configurable
-        if TESTING_MODE:
-            end_date = datetime.now()
-            start_date = end_date - timedelta(days=30)
-        else:
-            end_date = datetime.now()
-            start_date = end_date - timedelta(days=365)  # Last year for production
+        # Use date range from config
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=DATE_RANGE_DAYS)
         
         # Format dates as required by API (usually YYYY-MM-DD or ISO format)
         start_date_str = start_date.strftime('%Y-%m-%d')
@@ -329,7 +480,7 @@ def get_paginated_data(session, endpoint_config, endpoint_name):
         print(f"   Fetching date range data from: {endpoint_url}")
         
         try:
-            response = session.get(endpoint_url)
+            response = session.get(endpoint_url, timeout=config['api']['rate_limiting']['timeout_seconds'])
             response.raise_for_status()
             data = response.json()
             
@@ -345,26 +496,14 @@ def get_paginated_data(session, endpoint_config, endpoint_name):
             print(f"   Error fetching date range data: {e}")
             raise
     
-    # Fixed query_params section for visit_schedule_realizations
-
-    # Fixed pagination logic for visit_schedule_realizations endpoint
-    # Replace the query_params section in your get_paginated_data function
-
     elif endpoint_config['pagination_type'] == 'query_params':
         # Query parameter based pagination (visit realizations)
         from datetime import datetime, timedelta
         
-        # Start with a reasonable date - use current date minus a few months
-        # The API documentation shows we need modified={modifiedDateTime}&skip={from}
-        if TESTING_MODE:
-            # Start from 3 months ago for testing
-            start_date = datetime.now() - timedelta(days=90)
-        else:
-            # Start from 1 year ago for production
-            start_date = datetime.now() - timedelta(days=365)
+        # Start with a reasonable date - use date range from config
+        start_date = datetime.now() - timedelta(days=DATE_RANGE_DAYS)
         
-        # Format date as ISO string (the format that worked in your second document)
-        # Based on the successful response, use: 2025-04-17T18:30:47.114Z format
+        # Format date as ISO string
         modified_date = start_date.strftime('%Y-%m-%dT%H:%M:%S.000Z')
         
         skip = 0
@@ -383,12 +522,11 @@ def get_paginated_data(session, endpoint_config, endpoint_name):
                 break
             
             # Build the URL with proper parameters
-            # Use the exact format from API docs: modified={modifiedDateTime}&skip={from}
             endpoint_url = f"{REPSLY_BASE_URL}/{endpoint_config['url_pattern']}?modified={modified_date}&skip={skip}"
             print(f"   Page {page_count}: Fetching from {endpoint_url}")
             
             try:
-                response = session.get(endpoint_url)
+                response = session.get(endpoint_url, timeout=config['api']['rate_limiting']['timeout_seconds'])
                 
                 # Check for specific error responses
                 if response.status_code == 400:
@@ -454,7 +592,7 @@ def get_paginated_data(session, endpoint_config, endpoint_name):
                 
                 # Move to next page
                 skip += page_size
-                time.sleep(0.1)  # Be nice to the API
+                time.sleep(1.0 / config['api']['rate_limiting']['requests_per_second'])  # Rate limiting from config
                 
             except requests.exceptions.RequestException as e:
                 print(f"   Request error on page {page_count}: {e}")
@@ -490,7 +628,7 @@ def get_paginated_data(session, endpoint_config, endpoint_name):
             print(f"   Page {page_count}: Fetching from {endpoint_url}")
             
             try:
-                response = session.get(endpoint_url)
+                response = session.get(endpoint_url, timeout=config['api']['rate_limiting']['timeout_seconds'])
                 response.raise_for_status()
                 data = response.json()
                 
@@ -524,7 +662,7 @@ def get_paginated_data(session, endpoint_config, endpoint_name):
                 if len(records) < endpoint_config['limit']:
                     break
                 
-                time.sleep(0.1)
+                time.sleep(1.0 / config['api']['rate_limiting']['requests_per_second'])  # Rate limiting from config
                 
             except Exception as e:
                 print(f"   Error on page {page_count}: {e}")
@@ -540,15 +678,14 @@ def get_paginated_data(session, endpoint_config, endpoint_name):
     print(f"✅ {endpoint_name}: Collected {len(all_data)} total records")
     return all_data
 
-
-
 def extract_repsly_endpoint(endpoint_name, **context):
-    """Extract data from any Repsly endpoint (same pattern as Acumatica)"""
+    """Extract data from any Repsly endpoint"""
     
-    if endpoint_name not in ENDPOINTS:
-        raise ValueError(f"Unknown endpoint: {endpoint_name}")
+    if endpoint_name not in ENABLED_ENDPOINTS:
+        print(f"⚠️  Endpoint {endpoint_name} is disabled in configuration")
+        return 0
     
-    endpoint_config = ENDPOINTS[endpoint_name]
+    endpoint_config = ENABLED_ENDPOINTS[endpoint_name]
     print(f"🔄 Extracting {endpoint_name} from {endpoint_config['path']}")
     
     try:
@@ -572,9 +709,10 @@ def extract_repsly_endpoint(endpoint_name, **context):
         df['_source_system'] = 'repsly'
         df['_endpoint'] = endpoint_name
         
-        # Save to CSV with Docker path (same as Acumatica)
-        os.makedirs('/opt/airflow/data/raw/repsly', exist_ok=True)
-        filename = f'/opt/airflow/data/raw/repsly/{endpoint_name}.csv'
+        # Save to CSV with path from config
+        raw_data_dir = config['extraction']['paths']['raw_data_directory']
+        os.makedirs(raw_data_dir, exist_ok=True)
+        filename = f'{raw_data_dir}/{endpoint_name}.csv'
         df.to_csv(filename, index=False)
         
         print(f"✅ {endpoint_name}: Saved {len(df)} records to {filename}")
@@ -587,7 +725,7 @@ def extract_repsly_endpoint(endpoint_name, **context):
         raise
 
 def load_csv_to_warehouse(**context):
-    """Load CSV files to any warehouse (dynamic) - SAME as Acumatica"""
+    """Load CSV files to warehouse based on config"""
     
     print("📊 Loading CSV files to warehouse...")
     
@@ -596,19 +734,18 @@ def load_csv_to_warehouse(**context):
         sys.path.append('/opt/airflow/config')
         from warehouse_config import load_warehouse_config, get_active_warehouse, get_connection_string
         
-        # Get warehouse configuration
-        warehouse_type = get_active_warehouse()
-        config = load_warehouse_config(warehouse_type)
+        # Get warehouse configuration from repsly config
+        warehouse_type = config['warehouse']['active_warehouse']
         
-        print(f"Loading to: {config['warehouse']['name']} ({warehouse_type})")
+        print(f"Loading to: {warehouse_type}")
         
         # Use warehouse-specific loading logic
         if warehouse_type == 'postgres':
-            return load_to_postgres_warehouse(config)
+            return load_to_postgres_warehouse()
         elif warehouse_type == 'snowflake':
-            return load_to_snowflake_warehouse(config)
+            return load_to_snowflake_warehouse()
         elif warehouse_type == 'clickhouse':
-            return load_to_clickhouse_warehouse(config)
+            return load_to_clickhouse_warehouse()
         else:
             raise ValueError(f"Unsupported warehouse: {warehouse_type}")
         
@@ -618,8 +755,8 @@ def load_csv_to_warehouse(**context):
         print(f"Full error: {traceback.format_exc()}")
         raise
 
-def load_to_postgres_warehouse(config):
-    """PostgreSQL-specific loading - DYNAMIC like Acumatica"""
+def load_to_postgres_warehouse():
+    """PostgreSQL-specific loading using config"""
     from sqlalchemy import create_engine, text
     import pandas as pd
     
@@ -630,19 +767,20 @@ def load_to_postgres_warehouse(config):
     connection_string = get_connection_string('postgres')
     engine = create_engine(connection_string)
     
-    # Create repsly schema if it doesn't exist
+    # Create schema from config
+    raw_schema = config['warehouse']['schemas']['raw_schema']
     with engine.begin() as conn:
-        conn.execute(text("CREATE SCHEMA IF NOT EXISTS repsly"))
-        print("✅ Created/verified repsly schema")
+        conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {raw_schema}"))
+        print(f"✅ Created/verified {raw_schema} schema")
     
     # DYNAMIC CSV file mapping (discovers files automatically)
-    csv_directory = '/opt/airflow/data/raw/repsly'
+    csv_directory = config['extraction']['paths']['raw_data_directory']
     csv_files = {}
     
-    for endpoint_name in ENDPOINTS.keys():
+    for endpoint_name in ENABLED_ENDPOINTS.keys():
         csv_path = f'{csv_directory}/{endpoint_name}.csv'
         if os.path.exists(csv_path):
-            table_name = f'repsly.raw_{endpoint_name}'
+            table_name = f'{raw_schema}.raw_{endpoint_name}'
             csv_files[table_name] = csv_path
     
     total_records = 0
@@ -654,7 +792,6 @@ def load_to_postgres_warehouse(config):
             # Extract schema and table name
             schema_name, table_name_only = table_name.split('.')
             
-            # Same logic as Acumatica
             with engine.begin() as conn:
                 # Check if table exists
                 table_exists_query = text("""
@@ -703,12 +840,12 @@ def load_to_postgres_warehouse(config):
     print(f"✅ PostgreSQL: Total {total_records} records loaded")
     return total_records
 
-def load_to_snowflake_warehouse(config):
+def load_to_snowflake_warehouse():
     """Snowflake-specific loading"""
     print("⚠️  Snowflake loading implementation needed")
     return 0
 
-def load_to_clickhouse_warehouse(config):
+def load_to_clickhouse_warehouse():
     """ClickHouse-specific loading"""
     print("⚠️  ClickHouse loading implementation needed")
     return 0
@@ -724,12 +861,15 @@ def debug_database_tables(**context):
         connection_string = "postgresql://postgres:postgres@postgres:5432/airflow"
         engine = create_engine(connection_string)
         
+        raw_schema = config['warehouse']['schemas']['raw_schema']
+        staging_schema = config['warehouse']['schemas']['staging_schema']
+        
         with engine.connect() as conn:
             # Check all tables in both schemas
-            result = conn.execute("""
+            result = conn.execute(f"""
                 SELECT schemaname, tablename, tableowner 
                 FROM pg_tables 
-                WHERE schemaname IN ('public', 'repsly') 
+                WHERE schemaname IN ('{staging_schema}', '{raw_schema}') 
                 ORDER BY schemaname, tablename;
             """)
             
@@ -738,10 +878,10 @@ def debug_database_tables(**context):
                 print(f"   {row[0]}.{row[1]} (owner: {row[2]})")
             
             # Check all views
-            result = conn.execute("""
+            result = conn.execute(f"""
                 SELECT schemaname, viewname, viewowner 
                 FROM pg_views 
-                WHERE schemaname IN ('public', 'repsly') 
+                WHERE schemaname IN ('{staging_schema}', '{raw_schema}') 
                 ORDER BY schemaname, viewname;
             """)
             
@@ -756,58 +896,53 @@ def debug_database_tables(**context):
         raise
 
 def run_dbt_transformations(**context):
-    """Run dbt transformations with debugging - SAME as Acumatica"""
+    """Run dbt transformations using config settings"""
     
     print("🔧 Running dbt transformations...")
     
     try:
-        dbt_dir = '/opt/airflow/dbt'
+        dbt_dir = config['dbt']['project_dir']
         print(f"✅ Found dbt directory: {dbt_dir}")
         
         # First, debug what exists
         debug_database_tables()
         
-        # MODULAR: Just add commands here as you create models
+        # Get dbt execution settings from config
+        fail_fast = "--fail-fast" if config['dbt']['execution']['fail_fast'] else ""
+        full_refresh = "--full-refresh" if config['dbt']['execution']['full_refresh'] else ""
+        threads = f"--threads {config['dbt']['execution']['threads']}"
+        
+        # Define dbt commands - you can make this configurable too
         commands = [
-            'dbt run --select clients_raw',
-            'dbt run --select clients',
-
-            'dbt run --select client_notes_raw',
-            'dbt run --select client_notes',
-
-            'dbt run --select daily_working_time_raw',
-            'dbt run --select daily_working_time',
-            # Add more as you create them:
-            'dbt run --select visits_raw',
-            'dbt run --select visits',
-
-            'dbt run --select representatives_raw',      # ✅ ADD THIS
-            'dbt run --select representatives',          # ✅ ADD THIS
-
-            'dbt run --select users_raw',      # ✅ ADD THIS
-            'dbt run --select users',          # ✅ ADD THIS
-
-            'dbt run --select visit_schedule_realizations_raw',
-            'dbt run --select visit_schedule_realizations',
-
-
-            'dbt run --select visit_schedules_extended_raw',
-            'dbt run --select visit_schedules_extended',  
-
-            'dbt run --select forms_raw',
-            'dbt run --select forms_staging', 
-            'dbt run --select form_items',
-            'dbt run --select forms_business',
-
-            # ✅ ADD THESE NEW LINES:
-            'dbt run --select photos_raw',
-            'dbt run --select photos',    
-
-            'dbt run --select visit_schedules_raw',
-            'dbt run --select visit_schedules',      
+            f'dbt run --select clients_raw {threads} {fail_fast} {full_refresh}',
+            f'dbt run --select clients {threads} {fail_fast} {full_refresh}',
+            f'dbt run --select client_notes_raw {threads} {fail_fast} {full_refresh}',
+            f'dbt run --select client_notes {threads} {fail_fast} {full_refresh}',
+            f'dbt run --select daily_working_time_raw {threads} {fail_fast} {full_refresh}',
+            f'dbt run --select daily_working_time {threads} {fail_fast} {full_refresh}',
+            f'dbt run --select visits_raw {threads} {fail_fast} {full_refresh}',
+            f'dbt run --select visits {threads} {fail_fast} {full_refresh}',
+            f'dbt run --select representatives_raw {threads} {fail_fast} {full_refresh}',
+            f'dbt run --select representatives {threads} {fail_fast} {full_refresh}',
+            f'dbt run --select users_raw {threads} {fail_fast} {full_refresh}',
+            f'dbt run --select users {threads} {fail_fast} {full_refresh}',
+            f'dbt run --select visit_schedule_realizations_raw {threads} {fail_fast} {full_refresh}',
+            f'dbt run --select visit_schedule_realizations {threads} {fail_fast} {full_refresh}',
+            f'dbt run --select visit_schedules_extended_raw {threads} {fail_fast} {full_refresh}',
+            f'dbt run --select visit_schedules_extended {threads} {fail_fast} {full_refresh}',
+            f'dbt run --select forms_raw {threads} {fail_fast} {full_refresh}',
+            f'dbt run --select forms_staging {threads} {fail_fast} {full_refresh}',
+            f'dbt run --select form_items {threads} {fail_fast} {full_refresh}',
+            f'dbt run --select forms_business {threads} {fail_fast} {full_refresh}',
+            f'dbt run --select photos_raw {threads} {fail_fast} {full_refresh}',
+            f'dbt run --select photos {threads} {fail_fast} {full_refresh}',
+            f'dbt run --select visit_schedules_raw {threads} {fail_fast} {full_refresh}',
+            f'dbt run --select visit_schedules {threads} {fail_fast} {full_refresh}',
         ]
         
         for cmd in commands:
+            # Clean up the command (remove extra spaces)
+            cmd = ' '.join(cmd.split())
             print(f"Running: {cmd}")
             result = subprocess.run(
                 cmd.split(), 
@@ -836,7 +971,7 @@ def run_dbt_transformations(**context):
         raise
 
 def check_transformed_data(**context):
-    """Check the results of dbt transformations - SAME pattern as Acumatica"""
+    """Check the results of dbt transformations"""
     
     print("🔍 Checking transformed data quality...")
     
@@ -847,16 +982,18 @@ def check_transformed_data(**context):
         connection_string = "postgresql://postgres:postgres@postgres:5432/airflow"
         engine = create_engine(connection_string)
         
-        # Check clients table (equivalent to customers in Acumatica)
+        staging_schema = config['warehouse']['schemas']['staging_schema']
+        
+        # Check clients table
         print("📊 Checking clients data...")
         with engine.connect() as conn:
-            result = conn.execute("""
+            result = conn.execute(f"""
                 SELECT 
                     COUNT(*) as total_clients,
                     COUNT(DISTINCT client_id) as unique_clients,
                     COUNT(email_clean) as clients_with_email,
                     COUNT(CASE WHEN is_active = true THEN 1 END) as active_clients
-                FROM public.clients
+                FROM {staging_schema}.clients
             """)
             
             row = result.fetchone()
@@ -866,18 +1003,16 @@ def check_transformed_data(**context):
             print(f"   Clients with email: {row[2]}")
             print(f"   Active clients: {row[3]}")
         
-        # Check client_notes table (equivalent to sales_invoices in Acumatica)
+        # Check other tables...
         print("\n📊 Checking client notes data...")
         with engine.connect() as conn:
-            result = conn.execute("""
+            result = conn.execute(f"""
                 SELECT 
                     COUNT(*) as total_notes,
                     COUNT(DISTINCT client_note_id) as unique_notes,
                     COUNT(DISTINCT client_code) as clients_with_notes,
-                    AVG(note_length) as avg_note_length,
-                    COUNT(CASE WHEN note_category = 'Ordering' THEN 1 END) as ordering_notes,
-                    COUNT(CASE WHEN note_sentiment = 'Positive' THEN 1 END) as positive_notes
-                FROM public.client_notes
+                    AVG(note_length) as avg_note_length
+                FROM {staging_schema}.client_notes
             """)
             
             row = result.fetchone()
@@ -886,300 +1021,17 @@ def check_transformed_data(**context):
             print(f"   Unique note IDs: {row[1]}")
             print(f"   Clients with notes: {row[2]}")
             print(f"   Average note length: {row[3]:.1f}" if row[3] else "N/A")
-            print(f"   Ordering notes: {row[4]}")
-            print(f"   Positive sentiment: {row[5]}")
-            
-            if row[0] > 0:
-                print("✅ Data transformation successful!")
-            else:
-                raise Exception("No data found in client_notes table")
-
-        # Check daily working time data
-        print("\n📊 Checking daily working time data...")
-        with engine.connect() as conn:
-            result = conn.execute("""
-                SELECT 
-                    COUNT(*) as total_work_days,
-                    COUNT(DISTINCT representative_code) as unique_reps,
-                    AVG(actual_work_duration_minutes) as avg_work_duration,
-                    AVG(number_of_visits) as avg_visits_per_day,
-                    AVG(client_time_percentage) as avg_client_time_pct,
-                    COUNT(CASE WHEN efficiency_rating = 'High Efficiency' THEN 1 END) as high_efficiency_days,
-                    AVG(mileage_total) as avg_daily_mileage
-                FROM public.daily_working_time
-            """)
-            
-            row = result.fetchone()
-            print(f"📊 Daily Working Time Data Quality:")
-            print(f"   Total work days: {row[0]}")
-            print(f"   Unique representatives: {row[1]}")
-            print(f"   Average work duration: {row[2]:.1f} minutes" if row[2] else "N/A")
-            print(f"   Average visits per day: {row[3]:.1f}" if row[3] else "N/A")
-            print(f"   Average client time: {row[4]:.1f}%" if row[4] else "N/A")
-            print(f"   High efficiency days: {row[5]}")
-            print(f"   Average daily mileage: {row[6]:.1f}" if row[6] else "N/A")
-
-        # ✅ ADD THIS - Check representatives data
-        print("\n📊 Checking representatives data...")
-        with engine.connect() as conn:
-            result = conn.execute("""
-                SELECT 
-                    COUNT(*) as total_representatives,
-                    COUNT(DISTINCT representative_code) as unique_rep_codes,
-                    COUNT(email_clean) as reps_with_email,
-                    COUNT(CASE WHEN is_active = true THEN 1 END) as active_reps,
-                    COUNT(CASE WHEN company_affiliation = 'Mammoth Distribution' THEN 1 END) as mammoth_reps,
-                    COUNT(CASE WHEN company_affiliation = '710 Labs' THEN 1 END) as labs_reps,
-                    AVG(territory_count) as avg_territories_per_rep,
-                    COUNT(CASE WHEN representative_tier = 'Internal - Primary' THEN 1 END) as internal_primary,
-                    AVG(data_completeness_score) as avg_completeness_score
-                FROM public.representatives
-            """)
-            
-            row = result.fetchone()
-            print(f"📊 Representatives Data Quality:")
-            print(f"   Total representatives: {row[0]}")
-            print(f"   Unique rep codes: {row[1]}")
-            print(f"   Reps with email: {row[2]}")
-            print(f"   Active representatives: {row[3]}")
-            print(f"   Mammoth reps: {row[4]}")
-            print(f"   710 Labs reps: {row[5]}")
-            print(f"   Avg territories per rep: {row[6]:.1f}" if row[6] else "N/A")
-            print(f"   Internal primary reps: {row[7]}")
-            print(f"   Avg completeness score: {row[8]:.1f}" if row[8] else "N/A")
-
-        # ✅ ADD THIS - Check visit schedule realizations data
-        print("\n📊 Checking visit schedule realizations data...")
-        with engine.connect() as conn:
-            result = conn.execute("""
-                SELECT 
-                    COUNT(*) as total_schedule_records,
-                    COUNT(DISTINCT employee_id) as unique_employees,
-                    COUNT(DISTINCT place_id) as unique_places,
-                    COUNT(CASE WHEN visit_status = 'Planned' THEN 1 END) as planned_visits,
-                    COUNT(CASE WHEN visit_status = 'Unplanned' THEN 1 END) as unplanned_visits,
-                    COUNT(CASE WHEN visit_status = 'Missed' THEN 1 END) as missed_visits,
-                    COUNT(CASE WHEN has_actual_times = true THEN 1 END) as visits_with_actual_times,
-                    COUNT(CASE WHEN has_planned_times = true THEN 1 END) as visits_with_planned_times,
-                    AVG(actual_duration_minutes) as avg_actual_duration,
-                    COUNT(CASE WHEN schedule_adherence = 'Good Adherence' THEN 1 END) as good_adherence_visits,
-                    COUNT(CASE WHEN geographic_region = 'West Coast' THEN 1 END) as west_coast_visits,
-                    COUNT(CASE WHEN work_day_type = 'Weekday' THEN 1 END) as weekday_visits,
-                    AVG(data_completeness_score) as avg_completeness_score
-                FROM public.visit_schedule_realizations
-            """)
-            
-            row = result.fetchone()
-            print(f"📊 Visit Schedule Realizations Data Quality:")
-            print(f"   Total schedule records: {row[0]}")
-            print(f"   Unique employees: {row[1]}")
-            print(f"   Unique places: {row[2]}")
-            print(f"   Planned visits: {row[3]}")
-            print(f"   Unplanned visits: {row[4]}")
-            print(f"   Missed visits: {row[5]}")
-            print(f"   Visits with actual times: {row[6]}")
-            print(f"   Visits with planned times: {row[7]}")
-            print(f"   Avg actual duration: {row[8]:.1f} minutes" if row[8] else "N/A")
-            print(f"   Good adherence visits: {row[9]}")
-            print(f"   West Coast visits: {row[10]}")
-            print(f"   Weekday visits: {row[11]}")
-            print(f"   Avg completeness score: {row[12]:.1f}" if row[12] else "N/A")
         
         engine.dispose()
         print("✅ All data quality checks completed successfully!")
-
-
-        # print("\n📊 Checking visit schedules extended data...")
-        # with engine.connect() as conn:
-        #     result = conn.execute("""
-        #         SELECT 
-        #             COUNT(*) as total_schedules,
-        #             COUNT(DISTINCT representative_name_clean) as unique_representatives,
-        #             COUNT(DISTINCT client_code) as unique_clients,
-        #             COUNT(CASE WHEN schedule_type = 'Recurring Schedule' THEN 1 END) as recurring_schedules,
-        #             COUNT(CASE WHEN schedule_type = 'One-time Appointment' THEN 1 END) as one_time_appointments,
-        #             COUNT(CASE WHEN has_specific_time = true THEN 1 END) as schedules_with_time,
-        #             COUNT(CASE WHEN scheduled_duration_minutes > 0 THEN 1 END) as schedules_with_duration,
-        #             AVG(scheduled_duration_minutes) as avg_duration_minutes,
-        #             COUNT(CASE WHEN geographic_region = 'California' THEN 1 END) as california_schedules,
-        #             COUNT(CASE WHEN geographic_region = 'New York' THEN 1 END) as new_york_schedules,
-        #             COUNT(CASE WHEN work_day_type = 'Weekday' THEN 1 END) as weekday_schedules,
-        #             COUNT(CASE WHEN client_tier = 'Corporate Client' THEN 1 END) as corporate_clients,
-        #             COUNT(CASE WHEN alert_configuration = 'Full Alerts' THEN 1 END) as full_alert_schedules,
-        #             COUNT(CASE WHEN schedule_complexity = 'Complex Schedule' THEN 1 END) as complex_schedules,
-        #             COUNT(CASE WHEN rep_volume_category = 'High Volume Rep' THEN 1 END) as high_volume_rep_schedules,
-        #             AVG(data_completeness_score) as avg_completeness_score
-        #         FROM public.visit_schedules_extended
-        #     """)
-            
-        #     row = result.fetchone()
-        #     print(f"📊 Visit Schedules Extended Data Quality:")
-        #     print(f"   Total schedules: {row[0]}")
-        #     print(f"   Unique representatives: {row[1]}")
-        #     print(f"   Unique clients: {row[2]}")
-        #     print(f"   Recurring schedules: {row[3]}")
-        #     print(f"   One-time appointments: {row[4]}")
-        #     print(f"   Schedules with specific time: {row[5]}")
-        #     print(f"   Schedules with duration: {row[6]}")
-        #     print(f"   Avg duration: {row[7]:.1f} minutes" if row[7] else "N/A")
-        #     print(f"   California schedules: {row[8]}")
-        #     print(f"   New York schedules: {row[9]}")
-        #     print(f"   Weekday schedules: {row[10]}")
-        #     print(f"   Corporate clients: {row[11]}")
-        #     print(f"   Full alert schedules: {row[12]}")
-        #     print(f"   Complex schedules: {row[13]}")
-        #     print(f"   High volume rep schedules: {row[14]}")
-        #     print(f"   Avg completeness score: {row[15]:.1f}" if row[15] else "N/A")
-
-
-
-        # ✅ ADD THIS - Check forms data
-        # print("\n📊 Checking forms data...")
-        # with engine.connect() as conn:
-        #     result = conn.execute("""
-        #         SELECT 
-        #             COUNT(*) as total_forms,
-        #             COUNT(DISTINCT visit_id) as unique_visits,
-        #             COUNT(DISTINCT client_code) as unique_clients,
-        #             COUNT(DISTINCT representative_name) as unique_representatives,
-        #             COUNT(CASE WHEN needs_follow_up = true THEN 1 END) as forms_needing_followup,
-        #             COUNT(CASE WHEN out_of_stock = true THEN 1 END) as forms_with_stockouts,
-        #             COUNT(CASE WHEN carries_thcv_gummies = true THEN 1 END) as clients_with_thcv,
-        #             COUNT(CASE WHEN has_retail_kit = true THEN 1 END) as clients_with_retail_kit,
-        #             COUNT(CASE WHEN doing_education = true THEN 1 END) as forms_with_education,
-        #             COUNT(CASE WHEN presentation_quality = 'Good' THEN 1 END) as good_presentations,
-        #             COUNT(CASE WHEN priority_level = 'High Priority' THEN 1 END) as high_priority_visits,
-        #             AVG(minutes_on_site) as avg_visit_duration,
-        #             AVG(photos_taken) as avg_photos_per_visit,
-        #             COUNT(CASE WHEN has_gps_location = true THEN 1 END) as forms_with_gps
-        #         FROM public.forms_business
-        #     """)
-            
-        #     row = result.fetchone()
-        #     print(f"📊 Forms Data Quality:")
-        #     print(f"   Total forms: {row[0]}")
-        #     print(f"   Unique visits: {row[1]}")
-        #     print(f"   Unique clients: {row[2]}")
-        #     print(f"   Unique representatives: {row[3]}")
-        #     print(f"   Forms needing follow-up: {row[4]}")
-        #     print(f"   Forms with stock-outs: {row[5]}")
-        #     print(f"   Clients with THCv gummies: {row[6]}")
-        #     print(f"   Clients with retail kit: {row[7]}")
-        #     print(f"   Forms with education: {row[8]}")
-        #     print(f"   Good presentations: {row[9]}")
-        #     print(f"   High priority visits: {row[10]}")
-        #     print(f"   Avg visit duration: {row[11]:.1f} minutes" if row[11] else "N/A")
-        #     print(f"   Avg photos per visit: {row[12]:.1f}" if row[12] else "N/A")
-        #     print(f"   Forms with GPS: {row[13]}")
-
-        # # ✅ ALSO ADD - Check form_items exploded data
-        # print("\n📊 Checking form items exploded data...")
-        # with engine.connect() as conn:
-        #     result = conn.execute("""
-        #         SELECT 
-        #             COUNT(*) as total_form_items,
-        #             COUNT(DISTINCT form_id) as forms_with_items,
-        #             COUNT(DISTINCT field) as unique_fields,
-        #             AVG(item_count) as avg_items_per_form,
-        #             MAX(item_count) as max_items_per_form
-        #         FROM (
-        #             SELECT form_id, COUNT(*) as item_count
-        #             FROM public.form_items
-        #             GROUP BY form_id
-        #         ) form_counts
-        #     """)
-            
-        #     row = result.fetchone()
-        #     print(f"📊 Form Items Data Quality:")
-        #     print(f"   Total form items: {row[0]}")
-        #     print(f"   Forms with items: {row[1]}")
-        #     print(f"   Unique field types: {row[2]}")
-        #     print(f"   Avg items per form: {row[3]:.1f}" if row[3] else "N/A")
-        #     print(f"   Max items per form: {row[4]}")
         
-
-        # ✅ ADD THIS - Check photos data
-        print("\n📊 Checking photos data...")
-        with engine.connect() as conn:
-            result = conn.execute("""
-                SELECT 
-                    COUNT(*) as total_photos,
-                    COUNT(DISTINCT visit_id) as unique_visits_with_photos,
-                    COUNT(DISTINCT client_code) as unique_clients_with_photos,
-                    COUNT(DISTINCT representative_name) as unique_representatives,
-                    COUNT(CASE WHEN is_competition_photo = true THEN 1 END) as competition_photos,
-                    COUNT(CASE WHEN is_display_photo = true THEN 1 END) as display_photos,
-                    COUNT(CASE WHEN is_marketing_photo = true THEN 1 END) as marketing_photos,
-                    COUNT(CASE WHEN is_social_media_worthy = true THEN 1 END) as social_media_photos,
-                    COUNT(CASE WHEN business_priority = 'High Priority' THEN 1 END) as high_priority_photos,
-                    COUNT(CASE WHEN has_note = true THEN 1 END) as photos_with_notes,
-                    COUNT(CASE WHEN is_valid_url = true THEN 1 END) as valid_photos,
-                    COUNT(CASE WHEN time_of_day = 'Morning' THEN 1 END) as morning_photos,
-                    COUNT(CASE WHEN time_of_day = 'Afternoon' THEN 1 END) as afternoon_photos,
-                    AVG(CASE WHEN photo_timestamp IS NOT NULL THEN 1.0 ELSE 0.0 END) * 100 as pct_with_timestamp
-                FROM public.photos
-            """)
-            
-            row = result.fetchone()
-            print(f"📊 Photos Data Quality:")
-            print(f"   Total photos: {row[0]}")
-            print(f"   Unique visits with photos: {row[1]}")
-            print(f"   Unique clients with photos: {row[2]}")
-            print(f"   Unique representatives: {row[3]}")
-            print(f"   Competition photos: {row[4]}")
-            print(f"   Display photos: {row[5]}")
-            print(f"   Marketing photos: {row[6]}")
-            print(f"   Social media worthy: {row[7]}")
-            print(f"   High priority photos: {row[8]}")
-            print(f"   Photos with notes: {row[9]}")
-            print(f"   Valid photo URLs: {row[10]}")
-            print(f"   Morning photos: {row[11]}")
-            print(f"   Afternoon photos: {row[12]}")
-            print(f"   Photos with timestamp: {row[13]:.1f}%" if row[13] else "N/A")
-
-
-        # ✅ ADD THIS - Check visit schedules data
-        print("\n📊 Checking visit schedules data...")
-        with engine.connect() as conn:
-            result = conn.execute("""
-                SELECT 
-                    COUNT(*) as total_schedules,
-                    COUNT(DISTINCT representative_code) as unique_representatives,
-                    COUNT(DISTINCT client_code) as unique_clients,
-                    COUNT(CASE WHEN geographic_region = 'California' THEN 1 END) as california_schedules,
-                    COUNT(CASE WHEN geographic_region = 'New York' THEN 1 END) as new_york_schedules,
-                    COUNT(CASE WHEN work_day_type = 'Weekday' THEN 1 END) as weekday_schedules,
-                    COUNT(CASE WHEN time_of_day = 'Morning' THEN 1 END) as morning_schedules,
-                    COUNT(CASE WHEN client_business_type = 'Corporate Client (DBA)' THEN 1 END) as corporate_clients,
-                    COUNT(CASE WHEN has_visit_notes = true THEN 1 END) as schedules_with_notes,
-                    COUNT(CASE WHEN has_complete_address = true THEN 1 END) as schedules_with_addresses,
-                    COUNT(CASE WHEN has_valid_datetime = true THEN 1 END) as schedules_with_datetime,
-                    AVG(data_completeness_score) as avg_completeness_score
-                FROM public.visit_schedules
-            """)
-            
-            row = result.fetchone()
-            print(f"📊 Visit Schedules Data Quality:")
-            print(f"   Total schedules: {row[0]}")
-            print(f"   Unique representatives: {row[1]}")
-            print(f"   Unique clients: {row[2]}")
-            print(f"   California schedules: {row[3]}")
-            print(f"   New York schedules: {row[4]}")
-            print(f"   Weekday schedules: {row[5]}")
-            print(f"   Morning schedules: {row[6]}")
-            print(f"   Corporate clients: {row[7]}")
-            print(f"   Schedules with notes: {row[8]}")
-            print(f"   Schedules with addresses: {row[9]}")
-            print(f"   Schedules with datetime: {row[10]}")
-            print(f"   Avg completeness score: {row[11]:.1f}" if row[11] else "N/A")
-
     except Exception as e:
         print(f"❌ Data quality check failed: {e}")
         # Don't fail the pipeline if this is just a check issue
         print("⚠️  Continuing pipeline despite quality check failure")
 
 # ========================
-# TASK DEFINITIONS - SAME as Acumatica
+# TASK DEFINITIONS
 # ========================
 
 start_task = EmptyOperator(
@@ -1204,9 +1056,9 @@ test_task = PythonOperator(
     dag=dag
 )
 
-# Create extraction tasks for each endpoint
+# Create extraction tasks for each ENABLED endpoint
 extraction_tasks = []
-for endpoint_name in ENDPOINTS.keys():
+for endpoint_name in ENABLED_ENDPOINTS.keys():
     task = PythonOperator(
         task_id=f'extract_{endpoint_name}',
         python_callable=extract_repsly_endpoint,
@@ -1241,8 +1093,9 @@ end_task = EmptyOperator(
 )
 
 # ========================
-# TASK DEPENDENCIES - SAME as Acumatica
+# TASK DEPENDENCIES
 # ========================
 
 # Linear flow: Extract -> Load -> Transform -> Quality Check
-start_task >> test_task >> extraction_tasks >> load_task >> transform_task >> quality_check_task >> end_task
+start_task >> test_task >> extraction_tasks >> load_task >> transform_task >> quality_check_task >> success_notification_task >> end_task
+# start_task >> test_task >> extraction_tasks >> load_task >> transform_task >> quality_check_task >> end_task

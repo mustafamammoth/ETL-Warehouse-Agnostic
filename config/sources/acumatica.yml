@@ -1,0 +1,171 @@
+# acumatica.yml - Configuration for Acumatica DAG
+# ==============================================
+
+# DAG Configuration
+dag:
+  # Basic DAG settings
+  dag_id: "acumatica_extract_transform"
+  description: "Extract from Acumatica API and transform with dbt"
+  owner: "data-team"
+  
+  # Schedule Configuration
+  schedule:
+    # Options: daily, weekly, monthly, hourly, cron, manual
+    type: "daily"
+    time: "01:00"  # 1 AM UTC
+    timezone: "UTC"  # or "America/Los_Angeles", etc.
+    
+    # Alternative cron expression (if type: "cron")
+    # cron_expression: "0 1 * * *"  # Daily at 1 AM
+    
+    # Weekly schedule (if type: "weekly")
+    # day_of_week: "monday"  # monday, tuesday, etc.
+    # time: "16:00"  # 4 PM
+    
+    # Monthly schedule (if type: "monthly")
+    # day_of_month: 1  # 1st of every month
+    # time: "02:00"
+  
+  # DAG Behavior
+  max_active_runs: 1
+  start_date: "2025-07-16"
+  
+  # Retry Configuration
+  retries: 1
+  retry_delay_minutes: 5
+  
+  # Email Configuration
+  email_on_failure: true
+  email_on_retry: false
+  email_on_success: true
+  
+  # Tags for organization
+  tags:
+    - "acumatica"
+    - "extract"
+    - "transform" 
+    - "dbt"
+    - "production"  # or "testing"
+
+# Notification Configuration
+notifications:
+  email:
+    # Primary contacts for failures
+    failure_recipients:
+      - "mustafa.zaki@mammoth.org"
+    
+    # Success notifications
+    success_recipients:
+      - "mustafa.zaki@mammoth.org"
+    
+    # Retry notifications
+    retry_recipients:
+      - "mustafa.zaki@mammoth.org"
+
+# API Configuration
+api:
+  # Base URL will be from environment variable
+  # base_url: set via ACUMATICA_BASE_URL env var
+  
+  # API version and endpoint structure
+  default_version: "23.200.001"
+  entity_endpoint: "entity/Default"
+  auth_endpoint: "entity/auth/login"
+  
+  # Rate limiting and retry settings
+  rate_limiting:
+    requests_per_second: 10
+    max_retries: 3
+    backoff_factor: 1.5
+    timeout_seconds: 30
+  
+  # Pagination settings
+  pagination:
+    default_page_size: 100
+    max_page_size: 1000
+
+# Extraction Configuration
+extraction:
+  # Testing vs Production mode
+  mode: "testing"  # "testing" or "production"
+  
+  testing:
+    max_records_per_endpoint: 100
+    
+  production:
+    max_records_per_endpoint: null  # No limit
+    
+  # Data paths
+  paths:
+    raw_data_directory: "/opt/airflow/data/raw/acumatica"
+    
+  # Endpoints configuration
+  endpoints:
+    # Core endpoints (always enabled)
+    always_extract:
+      - "customers"
+      - "sales_orders"
+      - "sales_invoices"
+      - "stock_items"
+    
+    # Optional endpoints (can be disabled)
+    optional_extract:
+      - "bill"
+      - "vendor"
+      - "purchase_order"
+    
+    # Disabled endpoints (skip these)
+    disabled: []
+    
+    # Custom endpoint settings
+    custom_settings:
+      customers:
+        priority: "high"  # Process this endpoint first
+        
+      sales_invoices:
+        require_validation: true  # Add extra validation
+        
+      stock_items:
+        max_pages: 50  # Override default max_pages
+
+# Warehouse Configuration
+warehouse:
+  # Which warehouse to use
+  active_warehouse: "postgres"  # postgres, snowflake, clickhouse
+  
+  # Schema/database organization
+  schemas:
+    raw_schema: "public"  # Where raw data goes
+    staging_schema: "public"  # Where transformed data goes
+
+# dbt Configuration
+dbt:
+  # dbt project settings
+  project_dir: "/opt/airflow/dbt"
+  profiles_dir: "/opt/airflow/dbt"
+  
+  # dbt execution settings
+  execution:
+    fail_fast: false
+    full_refresh: false  # Set to true for complete rebuild
+    threads: 4
+    
+  # Model execution order
+  model_sequence:
+    raw_models:
+      - "customers_raw"
+      - "sales_invoices_raw"
+      - "sales_orders_raw"
+      - "stock_items_raw"
+      - "bills_raw"
+      - "vendors_raw"
+      - "purchase_orders_raw"
+    
+    business_models:
+      - "customers"
+      - "sales_invoices"
+      - "sales_orders"
+      - "stock_items"
+      - "bills"
+      - "vendors"
+      - "purchase_orders"

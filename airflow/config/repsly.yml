@@ -1,0 +1,196 @@
+# repsly.yml - Configuration for Repsly DAG
+# ==========================================
+
+# DAG Configuration
+dag:
+  # Basic DAG settings
+  dag_id: "repsly_extract_transform"
+  description: "Extract from Repsly API and transform with dbt"
+  owner: "data-team"
+  
+  # Schedule Configuration
+  schedule:
+    # Options: daily, weekly, monthly, hourly, cron, manual
+    type: "daily"
+    time: "02:00"  # 2 AM UTC
+    timezone: "UTC"  # or "America/Los_Angeles", etc.
+    
+    # Alternative cron expression (if type: "cron")
+    # cron_expression: "0 2 * * *"  # Daily at 2 AM
+    
+    # Weekly schedule (if type: "weekly")
+    # day_of_week: "monday"  # monday, tuesday, etc.
+    # time: "17:00"  # 5 PM
+    
+    # Monthly schedule (if type: "monthly")
+    # day_of_month: 1  # 1st of every month
+    # time: "03:00"
+  
+  # DAG Behavior
+  catchup: false
+  max_active_runs: 1
+  start_date: "2025-01-01"
+  
+  # Retry Configuration
+  retries: 2
+  retry_delay_minutes: 10
+  
+  # Email Configuration
+  email_on_failure: true
+  email_on_retry: false
+  email_on_success: true  # Optional success notifications
+  
+  # Tags for organization
+  tags:
+    - "repsly"
+    - "extract"
+    - "transform" 
+    - "dbt"
+    - "production"  # or "testing"
+
+# Notification Configuration
+notifications:
+  email:
+    # Primary contacts for failures
+    failure_recipients:
+      - "mustafa.zaki@mammoth.org"
+    
+    # Success notifications (optional)
+    success_recipients:
+      - "mustafa.zaki@mammoth.org"
+    
+    # Retry notifications (usually fewer people)
+    retry_recipients:
+      - "mustafa.zaki@mammoth.org"
+
+# API Configuration
+api:
+  base_url: "https://api.repsly.com/v3"
+  
+  # Credentials (should be environment variables)
+  # credentials:
+  #   username_env_var: "REPSLY_USERNAME"
+  #   password_env_var: "REPSLY_PASSWORD"
+  
+  # Rate limiting and retry settings
+  rate_limiting:
+    requests_per_second: 10
+    max_retries: 3
+    backoff_factor: 1.5
+    timeout_seconds: 30
+  
+  # Connection testing
+  test_endpoint: "export/clients/0"
+
+# Extraction Configuration
+extraction:
+  # Testing vs Production mode
+  mode: "testing"  # "testing" or "production"
+  
+  testing:
+    max_records_per_endpoint: 50
+    date_range_days: 30  # For date-range endpoints
+    
+  production:
+    max_records_per_endpoint: null  # No limit
+    date_range_days: 365  # Last year for initial load
+    
+  # Data paths
+  paths:
+    raw_data_directory: "/opt/airflow/data/raw/repsly"
+    
+  # Extraction behavior
+  parallel_extraction: false  # Set to true for parallel endpoint extraction
+  
+  # Endpoints configuration
+  endpoints:
+    # Core endpoints (always enabled)
+    always_extract:
+      - "clients"
+      - "visits"
+      - "representatives"
+      - "users"
+    
+    # Optional endpoints (can be disabled)
+    optional_extract:
+      - "client_notes"
+      - "daily_working_time" 
+      - "products"
+      - "retail_audits"
+      - "purchase_orders"
+      - "forms"
+      - "photos"
+      - "visit_schedules"
+      - "visit_schedules_extended"
+      - "visit_schedule_realizations"
+      - "document_types"
+      - "pricelists"
+      - "pricelist_items"
+    
+    # Disabled endpoints (skip these)
+    disabled:
+      - "import_job_status"  # Example of disabled endpoint
+    
+    # Custom endpoint settings
+    custom_settings:
+      visit_schedule_realizations:
+        max_pages: 200  # Override default max_pages
+        skip_limit: 9500  # API limitation
+        
+      photos:
+        priority: "high"  # Process this endpoint first
+        
+      forms:
+        require_validation: true  # Add extra validation for this endpoint
+
+# Warehouse Configuration
+warehouse:
+  # Which warehouse to use
+  active_warehouse: "postgres"  # postgres, snowflake, clickhouse
+  
+  # Schema/database organization
+  schemas:
+    raw_schema: "repsly"
+    staging_schema: "public"  # Where transformed data goes
+
+# dbt Configuration
+dbt:
+  # dbt project settings
+  project_dir: "/opt/airflow/dbt"
+  profiles_dir: "/opt/airflow/dbt"
+  
+  # dbt execution settings
+  execution:
+    fail_fast: false
+    full_refresh: false  # Set to true for complete rebuild
+    threads: 4
+
+# Feature Flags
+features:
+  # New feature toggles
+  enable_parallel_extraction: false
+  enable_data_lineage_tracking: false
+  enable_advanced_monitoring: false
+  enable_auto_recovery: false
+  
+  # Experimental features
+  experimental:
+    use_new_pagination_logic: false
+    enable_smart_scheduling: false  # Adjust schedule based on data patterns
+    use_ml_data_validation: false
+
+# Maintenance Configuration
+maintenance:
+  # Cleanup settings
+  cleanup:
+    delete_old_csv_files: true
+    csv_retention_days: 7
+    
+    delete_old_logs: true
+    log_retention_days: 30
+    
+  # Health checks
+  health_checks:
+    verify_endpoints_accessible: true
+    check_warehouse_connectivity: true
+    validate_dbt_compilation: true
