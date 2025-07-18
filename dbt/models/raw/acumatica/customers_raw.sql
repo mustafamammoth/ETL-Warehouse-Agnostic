@@ -1,52 +1,66 @@
--- Raw customer data with basic filtering and renaming (consistent TEXT approach)
+-- Raw customer data with basic filtering and renaming (bronze layer)
 {{ config(materialized='view') }}
 
 SELECT 
     id as customer_guid,
+    "rowNumber"::TEXT as row_number,
+    "note"::TEXT as note,
+    "AccountRef"::TEXT as account_ref,
+    "ApplyOverdueCharges"::TEXT as apply_overdue_charges_raw,
+    "AutoApplyPayments"::TEXT as auto_apply_payments_raw,
+    "BAccountID"::TEXT as b_account_id,
+    "BillingAddressOverride"::TEXT as billing_address_override_raw,
+    "BillingContactOverride"::TEXT as billing_contact_override_raw,
+    "CreatedDateTime"::TEXT as created_datetime_raw,
+    "CreditLimit"::TEXT as credit_limit_raw,
+    "CurrencyID"::TEXT as currency_id,
+    "CurrencyRateType"::TEXT as currency_rate_type,
+    "CustomerCategory"::TEXT as customer_category,
+    "CustomerClass"::TEXT as customer_class,
     "CustomerID"::TEXT as customer_id,
     "CustomerName"::TEXT as customer_name,
     "Email"::TEXT as email_raw,
-    "CreditLimit"::TEXT as credit_limit_raw,
+    "EnableCurrencyOverride"::TEXT as enable_currency_override_raw,
+    "EnableRateOverride"::TEXT as enable_rate_override_raw,
+    "EnableWriteOffs"::TEXT as enable_write_offs_raw,
+    "FOBPoint"::TEXT as fob_point,
+    "LastModifiedDateTime"::TEXT as last_modified_datetime_raw,
+    "LeadTimedays"::TEXT as lead_time_days_raw,
+    "LocationName"::TEXT as location_name,
+    "MultiCurrencyStatements"::TEXT as multi_currency_statements_raw,
+    "NoteID"::TEXT as note_id,
+    "OrderPriority"::TEXT as order_priority_raw,
+    "ParentRecord"::TEXT as parent_record,
+    "PriceClassID"::TEXT as price_class_id,
+    "PrimaryContactID"::TEXT as primary_contact_id_raw,
+    "PrintDunningLetters"::TEXT as print_dunning_letters_raw,
+    "PrintInvoices"::TEXT as print_invoices_raw,
+    "PrintStatements"::TEXT as print_statements_raw,
+    "ResidentialDelivery"::TEXT as residential_delivery_raw,
+    "SaturdayDelivery"::TEXT as saturday_delivery_raw,
+    "SendDunningLettersbyEmail"::TEXT as send_dunning_letters_by_email_raw,
+    "SendInvoicesbyEmail"::TEXT as send_invoices_by_email_raw,
+    "SendStatementsbyEmail"::TEXT as send_statements_by_email_raw,
+    "ShippingAddressOverride"::TEXT as shipping_address_override_raw,
+    "ShippingBranch"::TEXT as shipping_branch,
+    "ShippingContactOverride"::TEXT as shipping_contact_override_raw,
+    "ShippingRule"::TEXT as shipping_rule,
+    "ShippingTerms"::TEXT as shipping_terms,
+    "ShippingZoneID"::TEXT as shipping_zone_id,
+    "ShipVia"::TEXT as ship_via,
+    "StatementCycleID"::TEXT as statement_cycle_id,
+    "StatementType"::TEXT as statement_type,
     "Status"::TEXT as status,
-    "CustomerClass"::TEXT as customer_class,
+    "TaxRegistrationID"::TEXT as tax_registration_id,
     "TaxZone"::TEXT as tax_zone,
     "Terms"::TEXT as payment_terms,
-    "CreatedDateTime"::TEXT as created_datetime_raw,
-    "LastModifiedDateTime"::TEXT as last_modified_datetime_raw,
-    note::TEXT,
-    "AccountRef"::TEXT as account_ref,
-    "ShippingZoneID"::TEXT as shipping_zone,
+    "WarehouseID"::TEXT as warehouse_id,
     "WriteOffLimit"::TEXT as write_off_limit_raw,
-    _extracted_at,
-    _source_system,
-    _endpoint
+    custom::TEXT,
+    "_links"::TEXT as source_links,
+    "_extracted_at" as extracted_at,
+    "_source_system" as source_system,
+    "_endpoint" as endpoint
 
 FROM {{ source('acumatica_raw', 'raw_customers') }}
 WHERE "CustomerID" IS NOT NULL
-
--- -- Raw customer data with basic filtering and renaming (customers_raw.sql)
--- {{ config(materialized='view') }}
-
--- SELECT 
---     id as customer_guid,
---     "CustomerID" as customer_id,
---     "CustomerName" as customer_name,
---     "Email" as email_raw,
---     "CreditLimit" as credit_limit_raw,
---     "Status" as status,
---     "CustomerClass" as customer_class,
---     "TaxZone" as tax_zone,
---     "Terms" as payment_terms,
---     "CreatedDateTime" as created_datetime_raw,
---     "LastModifiedDateTime" as last_modified_datetime_raw,
---     note,
---     "AccountRef" as account_ref,
---     "ShippingZoneID" as shipping_zone,
---     "WriteOffLimit" as write_off_limit_raw,
---     _extracted_at,
---     _source_system,
---     _endpoint
-
--- FROM {{ source('acumatica_raw', 'raw_customers') }}
--- WHERE "CustomerID" IS NOT NULL
---   AND "CustomerID" != ''

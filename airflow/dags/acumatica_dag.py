@@ -389,7 +389,7 @@ def load_csv_to_warehouse(**context):
         from warehouse_config import load_warehouse_config, get_active_warehouse, get_connection_string
         
         # Get warehouse configuration from acumatica config
-        warehouse_type = config['warehouse']['active_warehouse']
+        warehouse_type = os.getenv('ACTIVE_WAREHOUSE')
         
         print(f"Loading to: {warehouse_type}")
         
@@ -506,11 +506,216 @@ def load_to_snowflake_warehouse():
     print("⚠️  Snowflake loading implementation needed")
     return 0
 
-def load_to_clickhouse_warehouse():
-    """ClickHouse-specific loading"""
-    print("⚠️  ClickHouse loading implementation needed")
-    return 0
+# acumatica_dag.py - UPDATE THESE FUNCTIONS
 
+def load_to_postgres_warehouse():
+    """PostgreSQL-specific loading using config"""
+    from sqlalchemy import create_engine, text
+    import pandas as pd
+    
+    # Get connection string
+    sys.path.append('/opt/airflow/config')
+    from warehouse_config import get_connection_string
+    
+    connection_string = get_connection_string('postgres')
+    engine = create_engine(connection_string)
+    
+    # ✅ FIXED: Use bronze_schema from config
+    bronze_schema = config['warehouse']['schemas']['bronze_schema']
+    with engine.begin() as conn:
+        conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {bronze_schema}"))
+        print(f"✅ Created/verified {bronze_schema} schema")
+    
+    # DYNAMIC CSV file mapping (discovers files automatically)
+    csv_directory = config['extraction']['paths']['raw_data_directory']
+    csv_files = {}
+    
+    for endpoint_name in ENABLED_ENDPOINTS.keys():
+        csv_path = f'{csv_directory}/{endpoint_name}.csv'
+        if os.path.exists(csv_path):
+            # ✅ FIXED: Use bronze_schema consistently
+            table_name = f'{bronze_schema}.raw_{endpoint_name}'
+            csv_files[table_name] = csv_path
+    
+    total_records = 0
+    for table_name, csv_path in csv_files.items():
+        if os.path.exists(csv_path):
+            print(f"   Loading {csv_path} to PostgreSQL...")
+            df = pd.read_csv(csv_path)
+            
+            # Handle schema and table name
+            if '.' in table_name:
+                schema_name, table_name_only = table_name.split('.')
+            else:
+                schema_name = bronze_schema
+                table_name_only = table_name
+            
+            with engine.begin() as conn:
+                # Check if table exists
+                table_exists_query = text("""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.tables 
+                        WHERE table_schema = :schema_name 
+                        AND table_name = :table_name
+                    )
+                """)
+                
+                result = conn.execute(table_exists_query, {
+                    'schema_name': schema_name, 
+                    'table_name': table_name_only
+                })
+                table_exists = result.scalar()
+                
+                if table_exists:
+                    conn.execute(text(f"TRUNCATE TABLE {schema_name}.{table_name_only}"))
+                    print(f"   Truncated existing table {schema_name}.{table_name_only}")
+                    
+                    df.to_sql(
+                        name=table_name_only,
+                        schema=schema_name,
+                        con=conn,
+                        if_exists='append',
+                        index=False,
+                        method='multi'
+                    )
+                else:
+                    print(f"   Table {schema_name}.{table_name_only} doesn't exist, creating...")
+                    df.to_sql(
+                        name=table_name_only,
+                        schema=schema_name,
+                        con=conn,
+                        if_exists='replace',
+                        index=False,
+                        method='multi'
+                    )
+            
+            total_records += len(df)
+            print(f"✅ Loaded {len(df)} records to PostgreSQL.{schema_name}.{table_name_only}")
+        else:
+            print(f"⚠️  File not found: {csv_path}")
+    
+    engine.dispose()
+    print(f"✅ PostgreSQL: Total {total_records} records loaded")
+    return total_records
+
+def load_to_clickhouse_warehouse():
+    """ClickHouse-specific loading - PostgreSQL structure but with working client"""
+    import pandas as pd
+    import os
+    import clickhouse_connect
+    
+    print("📊 Loading CSV files to ClickHouse...")
+    
+    try:
+        # Get ClickHouse connection details from environment
+        host = os.getenv('CLICKHOUSE_HOST')
+        port = int(os.getenv('CLICKHOUSE_PORT', 8443))
+        database = os.getenv('CLICKHOUSE_DATABASE', 'default')
+        username = os.getenv('CLICKHOUSE_USER', 'default')
+        password = os.getenv('CLICKHOUSE_PASSWORD')
+        
+        # Create ClickHouse client connection
+        client = clickhouse_connect.get_client(
+            host=host,
+            port=port,
+            username=username,
+            password=password,
+            database=database,
+            secure=True
+        )
+        
+        # ✅ FIXED: Use bronze_schema from config
+        bronze_schema = config['warehouse']['schemas']['bronze_schema']
+        
+        # Create schema (database in ClickHouse terms)
+        if bronze_schema != 'default':
+            client.command(f'CREATE DATABASE IF NOT EXISTS {bronze_schema}')
+        print(f"✅ Created/verified {bronze_schema} schema")
+        
+        # SAME CSV file mapping as PostgreSQL
+        csv_directory = config['extraction']['paths']['raw_data_directory']
+        csv_files = {}
+        
+        for endpoint_name in ENABLED_ENDPOINTS.keys():
+            csv_path = f'{csv_directory}/{endpoint_name}.csv'
+            if os.path.exists(csv_path):
+                # ✅ FIXED: Use bronze_schema consistently
+                table_name = f'{bronze_schema}.raw_{endpoint_name}'
+                csv_files[table_name] = csv_path
+        
+        total_records = 0
+        for table_name, csv_path in csv_files.items():
+            if os.path.exists(csv_path):
+                print(f"   Loading {csv_path} to ClickHouse...")
+                df = pd.read_csv(csv_path)
+                
+                # Handle schema and table name
+                if '.' in table_name:
+                    schema_name, table_name_only = table_name.split('.')
+                else:
+                    schema_name = bronze_schema
+                    table_name_only = table_name
+                
+                # SAME logic as PostgreSQL - try truncate, then replace
+                full_table_name = f'{schema_name}.{table_name_only}'
+                
+                try:
+                    # Try to truncate existing table
+                    client.command(f'TRUNCATE TABLE {full_table_name}')
+                    print(f"   Truncated existing table {full_table_name}")
+                    
+                    # Convert all data to strings for ClickHouse String columns
+                    df_str = df.astype(str)
+                    df_str = df_str.replace('nan', '')  # Replace pandas 'nan' strings with empty
+                    
+                    # Insert data
+                    client.insert_df(table=full_table_name, df=df_str)
+                    
+                except Exception as truncate_error:
+                    # Table doesn't exist, create new table
+                    print(f"   Table doesn't exist, creating new: {truncate_error}")
+                    
+                    # Drop and create fresh
+                    client.command(f'DROP TABLE IF EXISTS {full_table_name}')
+                    
+                    # Create table with all String columns (let dbt handle typing)
+                    columns = []
+                    for col in df.columns:
+                        safe_col = col.replace(' ', '_').replace('-', '_').replace('.', '_')
+                        columns.append(f'`{safe_col}` String')
+                    
+                    create_sql = f"""
+                    CREATE TABLE {full_table_name} (
+                        {', '.join(columns)}
+                    ) ENGINE = MergeTree() ORDER BY tuple()
+                    """
+                    
+                    client.command(create_sql)
+                    print(f"   Created table {full_table_name}")
+                    
+                    # Clean DataFrame column names to match and convert all to strings
+                    df.columns = [col.replace(' ', '_').replace('-', '_').replace('.', '_') for col in df.columns]
+                    df_str = df.astype(str)  # Convert everything to strings
+                    df_str = df_str.replace('nan', '')  # Replace pandas 'nan' strings with empty
+                    
+                    # Insert data
+                    client.insert_df(table=full_table_name, df=df_str)
+                
+                total_records += len(df)
+                print(f"✅ Loaded {len(df)} records to ClickHouse.{full_table_name}")
+            else:
+                print(f"⚠️  File not found: {csv_path}")
+        
+        client.close()
+        print(f"✅ ClickHouse: Total {total_records} records loaded")
+        return total_records
+        
+    except Exception as e:
+        print(f"❌ Failed to load data to ClickHouse: {e}")
+        import traceback
+        print(f"Full error: {traceback.format_exc()}")
+        raise
+    
 def debug_database_tables(**context):
     """Debug function to see what tables exist"""
     
@@ -606,45 +811,131 @@ def run_dbt_transformations(**context):
         raise
 
 def check_transformed_data(**context):
-    """Check the results of dbt transformations"""
+    """Check the results of dbt transformations in ClickHouse"""
     
-    print("🔍 Checking transformed data quality...")
+    print("🔍 Checking transformed data quality in ClickHouse...")
     
     try:
-        from sqlalchemy import create_engine
+        import clickhouse_connect
+        import os
         
-        # Use SQLAlchemy engine
-        connection_string = "postgresql://postgres:postgres@postgres:5432/airflow"
-        engine = create_engine(connection_string)
+        # Get ClickHouse connection details
+        host = os.getenv('CLICKHOUSE_HOST')
+        port = int(os.getenv('CLICKHOUSE_PORT', 8443))
+        database = os.getenv('CLICKHOUSE_DATABASE', 'default')
+        username = os.getenv('CLICKHOUSE_USER', 'default')
+        password = os.getenv('CLICKHOUSE_PASSWORD')
+        
+        # Create ClickHouse client connection
+        client = clickhouse_connect.get_client(
+            host=host,
+            port=port,
+            username=username,
+            password=password,
+            database=database,
+            secure=True
+        )
         
         staging_schema = config['warehouse']['schemas']['staging_schema']
         
         # Check customers table
         print("📊 Checking customers data...")
-        with engine.connect() as conn:
-            result = conn.execute(f"""
-                SELECT 
-                    COUNT(*) as total_customers,
-                    COUNT(DISTINCT customer_id) as unique_customers,
-                    COUNT(primary_email) as customers_with_email,
-                    AVG(CAST(credit_limit AS NUMERIC)) as avg_credit_limit
-                FROM {staging_schema}.customers
-            """)
-            
-            row = result.fetchone()
+        result = client.query(f"""
+            SELECT 
+                count(*) as total_customers,
+                uniq(customer_id) as unique_customers,
+                countIf(primary_email != '') as customers_with_email,
+                avg(toFloat64OrNull(credit_limit)) as avg_credit_limit
+            FROM {staging_schema}.customers
+        """)
+        
+        if result.result_rows:
+            row = result.result_rows[0]
             print(f"📊 Customer Data Quality:")
             print(f"   Total customers: {row[0]}")
             print(f"   Unique customer IDs: {row[1]}")
             print(f"   Customers with email: {row[2]}")
             print(f"   Average credit limit: ${row[3]:.2f}" if row[3] else "N/A")
         
-        engine.dispose()
-        print("✅ All data quality checks completed successfully!")
+        # Check sales invoices table
+        print("\n📊 Checking sales invoices data...")
+        result = client.query(f"""
+            SELECT 
+                count(*) as total_invoices,
+                uniq(invoice_number) as unique_invoices,
+                uniq(customer_id) as customers_with_invoices,
+                sum(toFloat64OrNull(amount)) as total_revenue,
+                avg(toFloat64OrNull(amount)) as avg_invoice_amount,
+                countIf(invoice_category = 'Regular Invoice') as regular_invoices,
+                countIf(invoice_category = 'Credit Memo') as credit_memos,
+                sum(toFloat64OrNull(outstanding_balance)) as total_outstanding
+            FROM {staging_schema}.sales_invoices
+        """)
+        
+        if result.result_rows:
+            row = result.result_rows[0]
+            print(f"📊 Sales Invoices Data Quality:")
+            print(f"   Total invoices: {row[0]}")
+            print(f"   Unique invoice numbers: {row[1]}")
+            print(f"   Customers with invoices: {row[2]}")
+            print(f"   Total revenue: ${row[3]:,.2f}" if row[3] else "N/A")
+            print(f"   Average invoice amount: ${row[4]:.2f}" if row[4] else "N/A")
+            print(f"   Regular invoices: {row[5]}")
+            print(f"   Credit memos: {row[6]}")
+            print(f"   Total outstanding: ${row[7]:,.2f}" if row[7] else "N/A")
+            
+            if row[0] > 0:
+                print("✅ Data transformation successful!")
+            else:
+                raise Exception("No data found in sales_invoices table")
+        
+        # Close connection
+        client.close()
+        print("✅ All ClickHouse data quality checks completed successfully!")
         
     except Exception as e:
-        print(f"❌ Data quality check failed: {e}")
-        # Don't fail the pipeline if this is just a check issue
+        print(f"❌ ClickHouse data quality check failed: {e}")
         print("⚠️  Continuing pipeline despite quality check failure")
+# def check_transformed_data(**context):
+#     """Check the results of dbt transformations"""
+    
+#     print("🔍 Checking transformed data quality...")
+    
+#     try:
+#         from sqlalchemy import create_engine
+        
+#         # Use SQLAlchemy engine
+#         connection_string = "postgresql://postgres:postgres@postgres:5432/airflow"
+#         engine = create_engine(connection_string)
+        
+#         staging_schema = config['warehouse']['schemas']['staging_schema']
+        
+#         # Check customers table
+#         print("📊 Checking customers data...")
+#         with engine.connect() as conn:
+#             result = conn.execute(f"""
+#                 SELECT 
+#                     COUNT(*) as total_customers,
+#                     COUNT(DISTINCT customer_id) as unique_customers,
+#                     COUNT(primary_email) as customers_with_email,
+#                     AVG(CAST(credit_limit AS NUMERIC)) as avg_credit_limit
+#                 FROM {staging_schema}.customers
+#             """)
+            
+#             row = result.fetchone()
+#             print(f"📊 Customer Data Quality:")
+#             print(f"   Total customers: {row[0]}")
+#             print(f"   Unique customer IDs: {row[1]}")
+#             print(f"   Customers with email: {row[2]}")
+#             print(f"   Average credit limit: ${row[3]:.2f}" if row[3] else "N/A")
+        
+#         engine.dispose()
+#         print("✅ All data quality checks completed successfully!")
+        
+#     except Exception as e:
+#         print(f"❌ Data quality check failed: {e}")
+#         # Don't fail the pipeline if this is just a check issue
+#         print("⚠️  Continuing pipeline despite quality check failure")
 
 def send_pipeline_success_notification(**context):
     """Send pipeline completion success email"""
@@ -726,6 +1017,10 @@ end_task = EmptyOperator(
 
 # Linear flow: Extract -> Load -> Transform -> Quality Check -> Success Notification
 start_task >> test_task >> extraction_tasks >> load_task >> transform_task >> quality_check_task >> success_notification_task >> end_task
+
+
+
+
 
 
 # from datetime import datetime, timedelta

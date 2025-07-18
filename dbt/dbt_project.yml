@@ -18,18 +18,31 @@ clean-targets:         # directories to be removed by `dbt clean`
   - "target"
   - "dbt_packages"
 
-# Configuring models
+# Configuring models - UPDATED WITH PROPER SCHEMAS
 models:
   acumatica_data_platform:
-    # Applies to all files under models/raw/
+    # BRONZE LAYER: Raw data from sources
     raw:
       +materialized: view
-    # Applies to all files under models/curated/  
+      # Source-specific schemas for bronze layer
+      acumatica:
+        +schema: bronze_acumatica
+      repsly:
+        +schema: bronze_repsly  # Future: when you add Repsly
+    
+    # SILVER LAYER: Cleaned, validated business data  
     curated:
       +materialized: table
-    # Applies to all files under models/analytics/
+      # Source-specific schemas for silver layer
+      acumatica:
+        +schema: silver_acumatica
+      repsly:
+        +schema: silver_repsly  # Future: when you add Repsly
+    
+    # GOLD LAYER: Cross-source business logic (future)
     analytics:
       +materialized: table
+      +schema: gold_unified  # Future: cross-source analytics
 
 # Variables
 vars:

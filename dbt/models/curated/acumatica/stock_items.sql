@@ -1,279 +1,326 @@
--- Cleaned and standardized stock items data
+-- Cleaned and standardized stock items data (silver layer) - ClickHouse compatible
 {{ config(materialized='table') }}
 
-WITH item_cleaning AS (
+WITH stock_item_cleaning AS (
     SELECT 
-        item_guid,
+        stock_item_guid,
         inventory_id,
+        description,
         
         -- Clean text fields
-        TRIM(COALESCE(description, '')) as description,
-        UPPER(TRIM(COALESCE(item_class, ''))) as item_class,
-        UPPER(TRIM(COALESCE(item_type, ''))) as item_type,
-        UPPER(TRIM(COALESCE(item_status, ''))) as item_status,
-        UPPER(TRIM(COALESCE(base_uom, ''))) as base_uom,
-        UPPER(TRIM(COALESCE(purchase_uom, ''))) as purchase_uom,
-        UPPER(TRIM(COALESCE(sales_uom, ''))) as sales_uom,
-        UPPER(TRIM(COALESCE(volume_uom, ''))) as volume_uom,
-        UPPER(TRIM(COALESCE(weight_uom, ''))) as weight_uom,
-        TRIM(COALESCE(default_warehouse_id, '')) as default_warehouse_id,
-        TRIM(COALESCE(default_issue_location_id, '')) as default_issue_location_id,
-        TRIM(COALESCE(default_receipt_location_id, '')) as default_receipt_location_id,
-        TRIM(COALESCE(posting_class, '')) as posting_class,
-        TRIM(COALESCE(lot_serial_class, '')) as lot_serial_class,
-        TRIM(COALESCE(price_class, '')) as price_class,
-        UPPER(TRIM(COALESCE(valuation_method, ''))) as valuation_method,
-        UPPER(TRIM(COALESCE(tax_category, ''))) as tax_category,
-        UPPER(TRIM(COALESCE(country_of_origin, ''))) as country_of_origin,
-        TRIM(COALESCE(tariff_code, '')) as tariff_code,
-        UPPER(TRIM(COALESCE(abc_code, ''))) as abc_code,
-        UPPER(TRIM(COALESCE(availability, ''))) as availability,
-        UPPER(TRIM(COALESCE(visibility, ''))) as visibility,
-        TRIM(COALESCE(content, '')) as content,
-        TRIM(COALESCE(image_url, '')) as image_url,
+        trimBoth(coalesce(abc_code, '')) as abc_code,
+        upper(trimBoth(coalesce(availability, ''))) as availability,
+        trimBoth(coalesce(base_uom, '')) as base_uom,
+        trimBoth(coalesce(cogs_account, '')) as cogs_account,
+        trimBoth(coalesce(cogs_subaccount, '')) as cogs_subaccount,
+        trimBoth(coalesce(content, '')) as content,
+        trimBoth(coalesce(country_of_origin, '')) as country_of_origin,
+        trimBoth(coalesce(default_issue_location_id, '')) as default_issue_location_id,
+        trimBoth(coalesce(default_receipt_location_id, '')) as default_receipt_location_id,
+        trimBoth(coalesce(default_warehouse_id, '')) as default_warehouse_id,
+        trimBoth(coalesce(discount_account, '')) as discount_account,
+        trimBoth(coalesce(discount_subaccount, '')) as discount_subaccount,
+        trimBoth(coalesce(image_url, '')) as image_url,
+        trimBoth(coalesce(inventory_account, '')) as inventory_account,
+        trimBoth(coalesce(inventory_subaccount, '')) as inventory_subaccount,
+        upper(trimBoth(coalesce(item_class, ''))) as item_class,
+        upper(trimBoth(coalesce(item_status, ''))) as item_status,
+        upper(trimBoth(coalesce(item_type, ''))) as item_type,
+        trimBoth(coalesce(landed_cost_variance_account, '')) as landed_cost_variance_account,
+        trimBoth(coalesce(landed_cost_variance_subaccount, '')) as landed_cost_variance_subaccount,
+        trimBoth(coalesce(lot_serial_class, '')) as lot_serial_class,
+        upper(trimBoth(coalesce(not_available, ''))) as not_available,
+        trimBoth(coalesce(note_id, '')) as note_id,
+        trimBoth(coalesce(po_accrual_account, '')) as po_accrual_account,
+        trimBoth(coalesce(po_accrual_subaccount, '')) as po_accrual_subaccount,
+        trimBoth(coalesce(posting_class, '')) as posting_class,
+        trimBoth(coalesce(price_class, '')) as price_class,
+        trimBoth(coalesce(price_manager, '')) as price_manager,
+        trimBoth(coalesce(price_workgroup, '')) as price_workgroup,
+        trimBoth(coalesce(product_manager, '')) as product_manager,
+        trimBoth(coalesce(product_workgroup, '')) as product_workgroup,
+        trimBoth(coalesce(purchase_price_variance_account, '')) as purchase_price_variance_account,
+        trimBoth(coalesce(purchase_price_variance_subaccount, '')) as purchase_price_variance_subaccount,
+        trimBoth(coalesce(purchase_uom, '')) as purchase_uom,
+        trimBoth(coalesce(reason_code_subaccount, '')) as reason_code_subaccount,
+        trimBoth(coalesce(sales_account, '')) as sales_account,
+        trimBoth(coalesce(sales_subaccount, '')) as sales_subaccount,
+        trimBoth(coalesce(sales_uom, '')) as sales_uom,
+        trimBoth(coalesce(standard_cost_revaluation_account, '')) as standard_cost_revaluation_account,
+        trimBoth(coalesce(standard_cost_revaluation_subaccount, '')) as standard_cost_revaluation_subaccount,
+        trimBoth(coalesce(standard_cost_variance_account, '')) as standard_cost_variance_account,
+        trimBoth(coalesce(standard_cost_variance_subaccount, '')) as standard_cost_variance_subaccount,
+        trimBoth(coalesce(tariff_code, '')) as tariff_code,
+        upper(trimBoth(coalesce(tax_category, ''))) as tax_category,
+        upper(trimBoth(coalesce(valuation_method, ''))) as valuation_method,
+        upper(trimBoth(coalesce(visibility, ''))) as visibility,
+        trimBoth(coalesce(volume_uom, '')) as volume_uom,
+        trimBoth(coalesce(weight_uom, '')) as weight_uom,
         
-        -- Clean notes
-        CASE 
-            WHEN note IS NOT NULL AND note != '' THEN 
-                REPLACE(REPLACE(TRIM(note), CHR(10), ' '), CHR(13), ' ')
-            ELSE NULL
-        END as notes_cleaned,
+        -- Clean numeric fields (ClickHouse compatible - preserve exact data)
+        multiIf(
+            (auto_incremental_value_raw IS NOT NULL) AND (auto_incremental_value_raw != '') AND (auto_incremental_value_raw != 'NULL'),
+            toFloat64(auto_incremental_value_raw),
+            CAST(NULL AS Nullable(Float64))
+        ) as auto_incremental_value,
         
-        -- Clean pricing fields (convert TEXT to proper decimals)
-        CASE 
-            WHEN default_price_raw IS NOT NULL AND default_price_raw != '' AND default_price_raw != 'NULL'
-            THEN CAST(default_price_raw AS DECIMAL(15,2))
-            ELSE 0.00
-        END as default_price,
+        multiIf(
+            (current_std_cost_raw IS NOT NULL) AND (current_std_cost_raw != '') AND (current_std_cost_raw != 'NULL'),
+            toDecimal64(current_std_cost_raw, 4),
+            toDecimal64('0.0000', 4)
+        ) as current_std_cost,
         
-        CASE 
-            WHEN current_std_cost_raw IS NOT NULL AND current_std_cost_raw != '' AND current_std_cost_raw != 'NULL'
-            THEN CAST(current_std_cost_raw AS DECIMAL(15,2))
-            ELSE 0.00
-        END as current_std_cost,
+        multiIf(
+            (cury_specific_msrp_raw IS NOT NULL) AND (cury_specific_msrp_raw != '') AND (cury_specific_msrp_raw != 'NULL'),
+            toDecimal64(cury_specific_msrp_raw, 2),
+            toDecimal64('0.00', 2)
+        ) as cury_specific_msrp,
         
-        CASE 
-            WHEN last_std_cost_raw IS NOT NULL AND last_std_cost_raw != '' AND last_std_cost_raw != 'NULL'
-            THEN CAST(last_std_cost_raw AS DECIMAL(15,2))
-            ELSE 0.00
-        END as last_std_cost,
+        multiIf(
+            (cury_specific_price_raw IS NOT NULL) AND (cury_specific_price_raw != '') AND (cury_specific_price_raw != 'NULL'),
+            toDecimal64(cury_specific_price_raw, 2),
+            toDecimal64('0.00', 2)
+        ) as cury_specific_price,
         
-        CASE 
-            WHEN pending_std_cost_raw IS NOT NULL AND pending_std_cost_raw != '' AND pending_std_cost_raw != 'NULL'
-            THEN CAST(pending_std_cost_raw AS DECIMAL(15,2))
-            ELSE 0.00
-        END as pending_std_cost,
+        multiIf(
+            (default_price_raw IS NOT NULL) AND (default_price_raw != '') AND (default_price_raw != 'NULL'),
+            toDecimal64(default_price_raw, 2),
+            toDecimal64('0.00', 2)
+        ) as default_price,
         
-        CASE 
-            WHEN msrp_raw IS NOT NULL AND msrp_raw != '' AND msrp_raw != 'NULL'
-            THEN CAST(msrp_raw AS DECIMAL(15,2))
-            ELSE 0.00
-        END as msrp,
+        multiIf(
+            (dimension_volume_raw IS NOT NULL) AND (dimension_volume_raw != '') AND (dimension_volume_raw != 'NULL'),
+            toDecimal64(dimension_volume_raw, 4),
+            toDecimal64('0.0000', 4)
+        ) as dimension_volume,
         
-        CASE 
-            WHEN specific_msrp_raw IS NOT NULL AND specific_msrp_raw != '' AND specific_msrp_raw != 'NULL'
-            THEN CAST(specific_msrp_raw AS DECIMAL(15,2))
-            ELSE 0.00
-        END as specific_msrp,
+        multiIf(
+            (dimension_weight_raw IS NOT NULL) AND (dimension_weight_raw != '') AND (dimension_weight_raw != 'NULL'),
+            toDecimal64(dimension_weight_raw, 4),
+            toDecimal64('0.0000', 4)
+        ) as dimension_weight,
         
-        CASE 
-            WHEN specific_price_raw IS NOT NULL AND specific_price_raw != '' AND specific_price_raw != 'NULL'
-            THEN CAST(specific_price_raw AS DECIMAL(15,2))
-            ELSE 0.00
-        END as specific_price,
+        multiIf(
+            (last_std_cost_raw IS NOT NULL) AND (last_std_cost_raw != '') AND (last_std_cost_raw != 'NULL'),
+            toDecimal64(last_std_cost_raw, 4),
+            toDecimal64('0.0000', 4)
+        ) as last_std_cost,
         
-        CASE 
-            WHEN markup_raw IS NOT NULL AND markup_raw != '' AND markup_raw != 'NULL'
-            THEN CAST(markup_raw AS DECIMAL(10,4))
-            ELSE 0.0000
-        END as markup,
+        multiIf(
+            (markup_raw IS NOT NULL) AND (markup_raw != '') AND (markup_raw != 'NULL'),
+            toDecimal64(markup_raw, 4),
+            toDecimal64('0.0000', 4)
+        ) as markup,
         
-        CASE 
-            WHEN min_markup_raw IS NOT NULL AND min_markup_raw != '' AND min_markup_raw != 'NULL'
-            THEN CAST(min_markup_raw AS DECIMAL(10,4))
-            ELSE 0.0000
-        END as min_markup,
+        multiIf(
+            (min_markup_raw IS NOT NULL) AND (min_markup_raw != '') AND (min_markup_raw != 'NULL'),
+            toDecimal64(min_markup_raw, 4),
+            toDecimal64('0.0000', 4)
+        ) as min_markup,
         
-        -- Clean dimension fields
-        CASE 
-            WHEN dimension_volume_raw IS NOT NULL AND dimension_volume_raw != '' AND dimension_volume_raw != 'NULL'
-            THEN CAST(dimension_volume_raw AS DECIMAL(15,4))
-            ELSE 0.0000
-        END as dimension_volume,
+        multiIf(
+            (msrp_raw IS NOT NULL) AND (msrp_raw != '') AND (msrp_raw != 'NULL'),
+            toDecimal64(msrp_raw, 2),
+            toDecimal64('0.00', 2)
+        ) as msrp,
         
-        CASE 
-            WHEN dimension_weight_raw IS NOT NULL AND dimension_weight_raw != '' AND dimension_weight_raw != 'NULL'
-            THEN CAST(dimension_weight_raw AS DECIMAL(15,4))
-            ELSE 0.0000
-        END as dimension_weight,
+        multiIf(
+            (pending_std_cost_raw IS NOT NULL) AND (pending_std_cost_raw != '') AND (pending_std_cost_raw != 'NULL'),
+            toDecimal64(pending_std_cost_raw, 4),
+            toDecimal64('0.0000', 4)
+        ) as pending_std_cost,
         
         -- Clean boolean fields
-        CASE 
-            WHEN UPPER(TRIM(COALESCE(is_a_kit_raw, 'FALSE'))) = 'TRUE' THEN TRUE
-            ELSE FALSE
-        END as is_a_kit,
+        multiIf(upper(trimBoth(coalesce(is_a_kit_raw, 'FALSE'))) = 'TRUE', true, false) as is_a_kit,
+        multiIf(upper(trimBoth(coalesce(subject_to_commission_raw, 'FALSE'))) = 'TRUE', true, false) as subject_to_commission,
         
-        CASE 
-            WHEN UPPER(TRIM(COALESCE(subject_to_commission_raw, 'FALSE'))) = 'TRUE' THEN TRUE
-            ELSE FALSE
-        END as subject_to_commission,
+        -- Clean dates (ClickHouse compatible)
+        multiIf(
+            (last_modified_raw IS NOT NULL) AND (last_modified_raw != ''),
+            parseDateTime64BestEffort(last_modified_raw),
+            CAST(NULL AS Nullable(DateTime64))
+        ) as last_modified_timestamp,
         
-        CASE 
-            WHEN UPPER(TRIM(COALESCE(not_available_raw, 'FALSE'))) = 'TRUE' THEN TRUE
-            ELSE FALSE
-        END as not_available,
+        multiIf(
+            (last_modified_raw IS NOT NULL) AND (last_modified_raw != ''),
+            toDate(parseDateTime64BestEffort(last_modified_raw)),
+            CAST(NULL AS Nullable(Date))
+        ) as last_modified_date,
         
-        -- Clean dates
-        CASE 
-            WHEN last_modified_raw IS NOT NULL AND last_modified_raw != '' 
-            THEN CAST(last_modified_raw AS TIMESTAMP)
-            ELSE NULL
-        END as last_modified_timestamp,
+        -- Clean description safely (without char functions for now)
+        trimBoth(coalesce(description, '')) as description_cleaned,
         
-        CASE 
-            WHEN last_modified_raw IS NOT NULL AND last_modified_raw != '' 
-            THEN DATE(CAST(last_modified_raw AS TIMESTAMP))
-            ELSE NULL
-        END as last_modified_date,
-        
+        -- Keep all raw fields that exist (excluding problematic ones)
+        row_number,
         source_links,
         extracted_at,
-        source_system
+        source_system,
+        endpoint,
+        
+        -- All the raw numeric fields for reference
+        auto_incremental_value_raw,
+        current_std_cost_raw,
+        cury_specific_msrp_raw,
+        cury_specific_price_raw,
+        default_price_raw,
+        dimension_volume_raw,
+        dimension_weight_raw,
+        last_std_cost_raw,
+        markup_raw,
+        min_markup_raw,
+        msrp_raw,
+        pending_std_cost_raw,
+        is_a_kit_raw,
+        subject_to_commission_raw,
+        last_modified_raw
 
     FROM {{ ref('stock_items_raw') }}
 ),
 
-item_categorization AS (
+stock_item_business_logic AS (
     SELECT
         *,
         
-        -- Product categorization based on InventoryID patterns
-        CASE 
-            WHEN inventory_id LIKE '710000BT%' THEN 'Battery'
-            WHEN inventory_id LIKE '710001LR%' THEN 'Live Rosin'
-            WHEN inventory_id LIKE '710000HA%' THEN 'Apparel'
-            WHEN inventory_id LIKE '710%' THEN '710 Brand'
-            ELSE 'Other'
-        END as product_category,
+        -- Item status categorization
+        multiIf(
+            item_status = 'ACTIVE', 'Active',
+            item_status = 'INACTIVE', 'Inactive',
+            item_status = 'TO DISCONTINUE', 'To Discontinue',
+            item_status
+        ) as item_status_clean,
         
-        -- Extract product details from description
-        CASE 
-            WHEN description LIKE '%1g%' OR description LIKE '%1 g%' THEN '1g'
-            WHEN description LIKE '%0.5g%' OR description LIKE '%.5g%' THEN '0.5g'
-            WHEN description LIKE '%2g%' OR description LIKE '%2 g%' THEN '2g'
-            ELSE 'Other Size'
-        END as product_size,
+        -- Item type categorization
+        multiIf(
+            item_type = 'FINISHED GOOD', 'Finished Good',
+            item_type = 'STOCK ITEM', 'Stock Item',
+            item_type = 'NON-STOCK ITEM', 'Non-Stock Item',
+            item_type = 'SERVICE', 'Service',
+            item_type
+        ) as item_type_clean,
         
-        -- Brand extraction
-        CASE 
-            WHEN description LIKE '710:%' THEN '710'
-            WHEN description LIKE 'Marketing:%' THEN 'Marketing'
-            ELSE 'Unknown Brand'
-        END as product_brand,
+        -- Product categorization (from description and inventory ID)
+        multiIf(
+            positionCaseInsensitive(description_cleaned, 'battery') > 0 OR positionCaseInsensitive(inventory_id, 'BT') > 0, 'Battery',
+            positionCaseInsensitive(description_cleaned, 'cart') > 0 OR positionCaseInsensitive(description_cleaned, 'pod') > 0, 'Cartridge/Pod',
+            positionCaseInsensitive(description_cleaned, 'rosin') > 0, 'Live Rosin',
+            positionCaseInsensitive(description_cleaned, 'distillate') > 0, 'Distillate',
+            positionCaseInsensitive(description_cleaned, 'flower') > 0, 'Flower',
+            positionCaseInsensitive(description_cleaned, 'edible') > 0 OR positionCaseInsensitive(description_cleaned, 'gumm') > 0, 'Edibles',
+            positionCaseInsensitive(description_cleaned, 'preroll') > 0, 'Pre-Roll',
+            positionCaseInsensitive(description_cleaned, 'concentrate') > 0, 'Concentrate',
+            positionCaseInsensitive(description_cleaned, 'packaging') > 0 OR positionCaseInsensitive(description_cleaned, 'bag') > 0 OR positionCaseInsensitive(description_cleaned, 'box') > 0, 'Packaging',
+            positionCaseInsensitive(description_cleaned, 'marketing') > 0 OR positionCaseInsensitive(description_cleaned, 'hat') > 0 OR positionCaseInsensitive(description_cleaned, 'shirt') > 0, 'Marketing/Merchandise',
+            'Other'
+        ) as product_category,
         
-        -- Status standardization
-        CASE 
-            WHEN item_status = 'ACTIVE' THEN 'Active'
-            WHEN item_status = 'INACTIVE' THEN 'Inactive'
-            WHEN item_status = 'DISCONTINUED' THEN 'Discontinued'
-            ELSE item_status
-        END as item_status_clean,
+        -- Price tier analysis
+        multiIf(
+            default_price >= toDecimal64('100.00', 2), 'Premium ($100+)',
+            default_price >= toDecimal64('50.00', 2), 'High ($50-100)',
+            default_price >= toDecimal64('25.00', 2), 'Medium ($25-50)',
+            default_price >= toDecimal64('10.00', 2), 'Low ($10-25)',
+            default_price > toDecimal64('0.00', 2), 'Budget (<$10)',
+            'No Price Set'
+        ) as price_tier,
         
-        -- Inventory management classification (moved here from item_business_logic)
-        CASE 
-            WHEN lot_serial_class = 'NOTTRACKED' THEN 'Standard Item'
-            WHEN lot_serial_class = 'LRE' THEN 'Lot Tracked'
-            WHEN lot_serial_class IS NOT NULL AND lot_serial_class != '' THEN 'Serial Tracked'
-            ELSE 'Unknown Tracking'
-        END as tracking_method,
+        -- Margin analysis (ClickHouse compatible - all Float64)
+        multiIf(
+            default_price > toDecimal64('0.00', 2) AND current_std_cost > toDecimal64('0.00', 4),
+            round(((toFloat64(default_price) - toFloat64(current_std_cost)) / toFloat64(default_price)) * 100, 2),
+            CAST(NULL AS Nullable(Float64))
+        ) as margin_percent,
         
-        -- Margin analysis (price vs cost) - moved here so they can be referenced later
-        CASE 
-            WHEN current_std_cost > 0 AND default_price > 0
-            THEN ROUND(((default_price - current_std_cost) / current_std_cost) * 100, 2)
-            ELSE 0.00
-        END as margin_percent,
+        multiIf(
+            default_price > toDecimal64('0.00', 2) AND current_std_cost > toDecimal64('0.00', 4),
+            toFloat64(default_price) - toFloat64(current_std_cost),
+            CAST(NULL AS Nullable(Float64))
+        ) as margin_amount,
         
-        CASE 
-            WHEN current_std_cost > 0 AND default_price > 0
-            THEN (default_price - current_std_cost)
-            ELSE 0.00
-        END as margin_amount
+        -- Inventory tracking classification
+        multiIf(
+            lot_serial_class = 'NOTTRACKED', 'Not Tracked',
+            lot_serial_class = 'SERIALIZED', 'Serialized',
+            lot_serial_class = 'LOT', 'Lot Tracked',
+            lot_serial_class
+        ) as tracking_method,
+        
+        -- Tax classification
+        multiIf(
+            tax_category = 'EXEMPT', 'Tax Exempt',
+            tax_category = 'TAXABLE', 'Taxable',
+            tax_category = 'CANNABIS', 'Cannabis Tax',
+            tax_category
+        ) as tax_classification,
+        
+        -- Visibility categorization
+        multiIf(
+            visibility = 'X', 'Visible',
+            visibility = 'HIDDEN', 'Hidden',
+            visibility
+        ) as visibility_status,
+        
+        -- Kit analysis
+        multiIf(
+            is_a_kit = true, 'Kit Product',
+            'Single Product'
+        ) as kit_status,
+        
+        -- Cost variance analysis (all Float64)
+        multiIf(
+            current_std_cost > toDecimal64('0.00', 4) AND last_std_cost > toDecimal64('0.00', 4),
+            round(((toFloat64(current_std_cost) - toFloat64(last_std_cost)) / toFloat64(last_std_cost)) * 100, 2),
+            CAST(NULL AS Nullable(Float64))
+        ) as cost_variance_percent,
+        
+        -- Price completeness flags
+        multiIf(default_price > toDecimal64('0.00', 2), true, false) as has_default_price,
+        multiIf(msrp > toDecimal64('0.00', 2), true, false) as has_msrp,
+        multiIf(current_std_cost > toDecimal64('0.00', 4), true, false) as has_standard_cost,
+        
+        -- Brand extraction (from inventory ID pattern)
+        multiIf(
+            startsWith(inventory_id, '710'), '710 Labs',
+            startsWith(inventory_id, 'HH'), 'Heavy Hitters',
+            startsWith(inventory_id, 'SEQ'), 'Sequoia',
+            startsWith(inventory_id, 'MAM'), 'Mammoth',
+            'Other'
+        ) as brand,
+        
+        -- Age analysis
+        multiIf(
+            last_modified_date IS NOT NULL,
+            dateDiff('day', last_modified_date, today()),
+            CAST(NULL AS Nullable(Int32))
+        ) as days_since_last_update,
+        
+        -- Time-based analysis (ClickHouse compatible)
+        multiIf(
+            last_modified_date IS NOT NULL,
+            toYear(last_modified_date),
+            CAST(NULL AS Nullable(UInt16))
+        ) as last_modified_year,
+        
+        multiIf(
+            last_modified_date IS NOT NULL,
+            toMonth(last_modified_date),
+            CAST(NULL AS Nullable(UInt8))
+        ) as last_modified_month,
+        
+        -- Data completeness score
+        (
+            multiIf(inventory_id IS NOT NULL AND inventory_id != '', 15, 0) +
+            multiIf(description_cleaned IS NOT NULL AND description_cleaned != '', 15, 0) +
+            multiIf(default_price > toDecimal64('0.00', 2), 15, 0) +
+            multiIf(current_std_cost > toDecimal64('0.00', 4), 15, 0) +
+            multiIf(item_class IS NOT NULL AND item_class != '', 10, 0) +
+            multiIf(item_status IS NOT NULL AND item_status != '', 10, 0) +
+            multiIf(base_uom IS NOT NULL AND base_uom != '', 10, 0) +
+            multiIf(tax_category IS NOT NULL AND tax_category != '', 10, 0)
+        ) as data_completeness_score
 
-    FROM item_cleaning
-),
-
-item_business_logic AS (
-    SELECT
-        *,
-        
-        -- Product pricing analysis
-        CASE 
-            WHEN default_price = 0 THEN 'No Price Set'
-            WHEN default_price < 10 THEN 'Low Price (<$10)'
-            WHEN default_price < 25 THEN 'Medium Price ($10-25)'
-            WHEN default_price < 50 THEN 'High Price ($25-50)'
-            ELSE 'Premium Price ($50+)'
-        END as price_tier,
-        
-        -- Product complexity
-        CASE 
-            WHEN is_a_kit = TRUE THEN 'Kit/Bundle'
-            WHEN product_category = 'Live Rosin' THEN 'Complex Product'
-            WHEN product_category = 'Battery' THEN 'Simple Product'
-            ELSE 'Standard Product'
-        END as product_complexity,
-        
-        -- Availability status
-        CASE 
-            WHEN item_status_clean = 'Active' AND availability = 'X' AND not_available = FALSE THEN 'Available'
-            WHEN item_status_clean = 'Active' AND not_available = TRUE THEN 'Temporarily Unavailable'
-            WHEN item_status_clean = 'Inactive' THEN 'Inactive'
-            WHEN item_status_clean = 'Discontinued' THEN 'Discontinued'
-            ELSE 'Unknown Status'
-        END as availability_status,
-        
-        -- Cannabis compliance indicators (now using tracking_method which exists in this CTE)
-        CASE 
-            WHEN tracking_method = 'Lot Tracked' AND product_category = 'Live Rosin' THEN 'High Compliance'
-            WHEN tracking_method = 'Lot Tracked' THEN 'Compliance Required'
-            WHEN tracking_method = 'Standard Item' THEN 'Standard Compliance'
-            ELSE 'Unknown Compliance'
-        END as compliance_level,
-        
-        -- Data quality flags
-        CASE 
-            WHEN description = '' OR description IS NULL THEN 'Missing Description'
-            WHEN default_price = 0 AND item_status_clean = 'Active' THEN 'Missing Price'
-            WHEN current_std_cost = 0 AND item_status_clean = 'Active' THEN 'Missing Cost'
-            WHEN base_uom = '' OR base_uom IS NULL THEN 'Missing UOM'
-            ELSE 'Valid'
-        END as data_quality_flag,
-        
-        -- Extract year/month for analysis
-        CASE 
-            WHEN last_modified_date IS NOT NULL 
-            THEN EXTRACT(YEAR FROM last_modified_date)
-            ELSE NULL
-        END as last_modified_year,
-        
-        CASE 
-            WHEN last_modified_date IS NOT NULL 
-            THEN EXTRACT(MONTH FROM last_modified_date)
-            ELSE NULL
-        END as last_modified_month,
-        
-        -- Price validation flags
-        CASE 
-            WHEN default_price < current_std_cost THEN 'Price Below Cost'
-            WHEN margin_percent > 1000 THEN 'Very High Margin'
-            WHEN margin_percent < 10 AND default_price > 0 THEN 'Low Margin'
-            ELSE 'Normal Pricing'
-        END as pricing_flag
-
-    FROM item_categorization
+    FROM stock_item_cleaning
 )
 
 SELECT * 
-FROM item_business_logic
-ORDER BY product_category, inventory_id
+FROM stock_item_business_logic
+ORDER BY inventory_id

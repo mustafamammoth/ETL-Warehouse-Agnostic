@@ -1,126 +1,133 @@
--- Cleaned and standardized sales invoices data
+-- Cleaned and standardized sales invoices data (ClickHouse compatible)
 {{ config(materialized='table') }}
 
 WITH invoice_cleaning AS (
     SELECT 
         invoice_guid,
-        invoice_number,
+        reference_number as invoice_number,
         customer_id,
         
         -- Clean text fields
-        TRIM(COALESCE(customer_order, '')) as customer_order,
-        UPPER(TRIM(COALESCE(invoice_type, ''))) as invoice_type,
-        UPPER(TRIM(COALESCE(status, ''))) as status,
-        TRIM(COALESCE(currency, 'USD')) as currency,
-        TRIM(COALESCE(project, '')) as project,
+        trimBoth(coalesce(customer_order, '')) as customer_order,
+        upper(trimBoth(coalesce(invoice_type, ''))) as invoice_type,
+        upper(trimBoth(coalesce(status, ''))) as status,
+        trimBoth(coalesce(currency_id, 'USD')) as currency,
+        trimBoth(coalesce(project, '')) as project,
         
-        -- Clean description
-        CASE 
-            WHEN description IS NOT NULL AND description != '' THEN 
-                REPLACE(REPLACE(TRIM(description), CHR(10), ' '), CHR(13), ' ')
-            ELSE NULL
-        END as description_cleaned,
+        -- Clean description (ClickHouse compatible)
+        multiIf(
+            (description IS NOT NULL) AND (description != ''),
+            replaceAll(replaceAll(trimBoth(description), char(10), ' '), char(13), ' '),
+            CAST(NULL AS Nullable(String))
+        ) as description_cleaned,
         
-        -- Clean numeric fields (convert TEXT to proper decimals)
-        CASE 
-            WHEN amount_raw IS NOT NULL AND amount_raw != '' AND amount_raw != 'NULL'
-            THEN CAST(amount_raw AS DECIMAL(15,2))
-            ELSE 0.00
-        END as amount,
+        -- Clean numeric fields (ClickHouse compatible - consistent decimal types)
+        multiIf(
+            (amount_raw IS NOT NULL) AND (amount_raw != '') AND (amount_raw != 'NULL'),
+            toDecimal64(amount_raw, 2),
+            toDecimal64('0.00', 2)
+        ) as amount,
         
-        CASE 
-            WHEN balance_raw IS NOT NULL AND balance_raw != '' AND balance_raw != 'NULL'
-            THEN CAST(balance_raw AS DECIMAL(15,2))
-            ELSE 0.00
-        END as balance,
+        multiIf(
+            (balance_raw IS NOT NULL) AND (balance_raw != '') AND (balance_raw != 'NULL'),
+            toDecimal64(balance_raw, 2),
+            toDecimal64('0.00', 2)
+        ) as balance,
         
-        CASE 
-            WHEN detail_total_raw IS NOT NULL AND detail_total_raw != '' AND detail_total_raw != 'NULL'
-            THEN CAST(detail_total_raw AS DECIMAL(15,2))
-            ELSE 0.00
-        END as detail_total,
+        multiIf(
+            (detail_total_raw IS NOT NULL) AND (detail_total_raw != '') AND (detail_total_raw != 'NULL'),
+            toDecimal64(detail_total_raw, 2),
+            toDecimal64('0.00', 2)
+        ) as detail_total,
         
-        CASE 
-            WHEN tax_total_raw IS NOT NULL AND tax_total_raw != '' AND tax_total_raw != 'NULL'
-            THEN CAST(tax_total_raw AS DECIMAL(15,2))
-            ELSE 0.00
-        END as tax_total,
+        multiIf(
+            (tax_total_raw IS NOT NULL) AND (tax_total_raw != '') AND (tax_total_raw != 'NULL'),
+            toDecimal64(tax_total_raw, 2),
+            toDecimal64('0.00', 2)
+        ) as tax_total,
         
-        CASE 
-            WHEN discount_total_raw IS NOT NULL AND discount_total_raw != '' AND discount_total_raw != 'NULL'
-            THEN CAST(discount_total_raw AS DECIMAL(15,2))
-            ELSE 0.00
-        END as discount_total,
+        multiIf(
+            (discount_total_raw IS NOT NULL) AND (discount_total_raw != '') AND (discount_total_raw != 'NULL'),
+            toDecimal64(discount_total_raw, 2),
+            toDecimal64('0.00', 2)
+        ) as discount_total,
         
-        CASE 
-            WHEN freight_price_raw IS NOT NULL AND freight_price_raw != '' AND freight_price_raw != 'NULL'
-            THEN CAST(freight_price_raw AS DECIMAL(15,2))
-            ELSE 0.00
-        END as freight_price,
+        multiIf(
+            (freight_price_raw IS NOT NULL) AND (freight_price_raw != '') AND (freight_price_raw != 'NULL'),
+            toDecimal64(freight_price_raw, 2),
+            toDecimal64('0.00', 2)
+        ) as freight_price,
         
-        CASE 
-            WHEN payment_total_raw IS NOT NULL AND payment_total_raw != '' AND payment_total_raw != 'NULL'
-            THEN CAST(payment_total_raw AS DECIMAL(15,2))
-            ELSE 0.00
-        END as payment_total,
+        multiIf(
+            (payment_total_raw IS NOT NULL) AND (payment_total_raw != '') AND (payment_total_raw != 'NULL'),
+            toDecimal64(payment_total_raw, 2),
+            toDecimal64('0.00', 2)
+        ) as payment_total,
         
-        CASE 
-            WHEN cash_discount_raw IS NOT NULL AND cash_discount_raw != '' AND cash_discount_raw != 'NULL'
-            THEN CAST(cash_discount_raw AS DECIMAL(15,2))
-            ELSE 0.00
-        END as cash_discount,
+        multiIf(
+            (cash_discount_raw IS NOT NULL) AND (cash_discount_raw != '') AND (cash_discount_raw != 'NULL'),
+            toDecimal64(cash_discount_raw, 2),
+            toDecimal64('0.00', 2)
+        ) as cash_discount,
         
         -- Clean boolean fields  
-        CASE 
-            WHEN UPPER(TRIM(COALESCE(credit_hold_raw, 'FALSE'))) = 'TRUE' THEN TRUE
-            ELSE FALSE
-        END as credit_hold,
+        multiIf(upper(trimBoth(coalesce(credit_hold_raw, 'FALSE'))) = 'TRUE', true, false) as credit_hold,
+        multiIf(upper(trimBoth(coalesce(hold_raw, 'FALSE'))) = 'TRUE', true, false) as hold,
+        multiIf(upper(trimBoth(coalesce(is_tax_valid_raw, 'FALSE'))) = 'TRUE', true, false) as is_tax_valid,
         
-        CASE 
-            WHEN UPPER(TRIM(COALESCE(hold_raw, 'FALSE'))) = 'TRUE' THEN TRUE
-            ELSE FALSE
-        END as hold,
+        -- Clean dates (ClickHouse compatible)
+        multiIf(
+            (invoice_date_raw IS NOT NULL) AND (invoice_date_raw != ''),
+            parseDateTime64BestEffort(invoice_date_raw),
+            CAST(NULL AS Nullable(DateTime64))
+        ) as invoice_date,
         
-        CASE 
-            WHEN UPPER(TRIM(COALESCE(is_tax_valid_raw, 'FALSE'))) = 'TRUE' THEN TRUE
-            ELSE FALSE
-        END as is_tax_valid,
+        multiIf(
+            (due_date_raw IS NOT NULL) AND (due_date_raw != ''),
+            parseDateTime64BestEffort(due_date_raw),
+            CAST(NULL AS Nullable(DateTime64))
+        ) as due_date,
         
-        -- Clean dates (keep timezone info)
-        CASE 
-            WHEN invoice_date_raw IS NOT NULL AND invoice_date_raw != '' 
-            THEN CAST(invoice_date_raw AS TIMESTAMP)
-            ELSE NULL
-        END as invoice_date,
-        
-        CASE 
-            WHEN due_date_raw IS NOT NULL AND due_date_raw != '' 
-            THEN CAST(due_date_raw AS TIMESTAMP)
-            ELSE NULL
-        END as due_date,
-        
-        CASE 
-            WHEN last_modified_datetime_raw IS NOT NULL AND last_modified_datetime_raw != '' 
-            THEN CAST(last_modified_datetime_raw AS TIMESTAMP)
-            ELSE NULL
-        END as last_modified_timestamp,
+        multiIf(
+            (last_modified_datetime_raw IS NOT NULL) AND (last_modified_datetime_raw != ''),
+            parseDateTime64BestEffort(last_modified_datetime_raw),
+            CAST(NULL AS Nullable(DateTime64))
+        ) as last_modified_timestamp,
         
         -- Extract simple dates for grouping
-        CASE 
-            WHEN invoice_date_raw IS NOT NULL AND invoice_date_raw != '' 
-            THEN DATE(CAST(invoice_date_raw AS TIMESTAMP))
-            ELSE NULL
-        END as invoice_date_only,
+        multiIf(
+            (invoice_date_raw IS NOT NULL) AND (invoice_date_raw != ''),
+            toDate(parseDateTime64BestEffort(invoice_date_raw)),
+            CAST(NULL AS Nullable(Date))
+        ) as invoice_date_only,
         
-        CASE 
-            WHEN due_date_raw IS NOT NULL AND due_date_raw != '' 
-            THEN DATE(CAST(due_date_raw AS TIMESTAMP))
-            ELSE NULL
-        END as due_date_only,
+        multiIf(
+            (due_date_raw IS NOT NULL) AND (due_date_raw != ''),
+            toDate(parseDateTime64BestEffort(due_date_raw)),
+            CAST(NULL AS Nullable(Date))
+        ) as due_date_only,
         
+        -- Keep ALL bronze fields that exist
+        row_number,
         source_links,
         extracted_at,
-        source_system
+        source_system,
+        
+        -- Raw fields for reference
+        amount_raw,
+        balance_raw,
+        detail_total_raw,
+        tax_total_raw,
+        discount_total_raw,
+        freight_price_raw,
+        payment_total_raw,
+        cash_discount_raw,
+        credit_hold_raw,
+        hold_raw,
+        is_tax_valid_raw,
+        invoice_date_raw,
+        due_date_raw,
+        last_modified_datetime_raw
 
     FROM {{ ref('sales_invoices_raw') }}
 ),
@@ -129,23 +136,23 @@ invoice_categorization AS (
     SELECT
         *,
         
-        -- Invoice classification (create invoice_category here)
-        CASE 
-            WHEN invoice_type = 'CREDIT MEMO' THEN 'Credit Memo'
-            WHEN invoice_type = 'INVOICE' OR invoice_type = '' THEN 'Regular Invoice'
-            ELSE invoice_type
-        END as invoice_category,
+        -- Invoice classification
+        multiIf(
+            invoice_type = 'CREDIT MEMO', 'Credit Memo',
+            invoice_type = 'INVOICE' OR invoice_type = '', 'Regular Invoice',
+            invoice_type
+        ) as invoice_category,
         
         -- Payment status
-        CASE 
-            WHEN balance = 0 THEN 'Paid'
-            WHEN status = 'CLOSED' AND balance > 0 THEN 'Closed with Balance'
-            WHEN balance > 0 THEN 'Outstanding'
-            ELSE 'Unknown'
-        END as payment_status,
+        multiIf(
+            balance = toDecimal64('0.00', 2), 'Paid',
+            status = 'CLOSED' AND balance > toDecimal64('0.00', 2), 'Closed with Balance',
+            balance > toDecimal64('0.00', 2), 'Outstanding',
+            'Unknown'
+        ) as payment_status,
         
         -- Calculate net amount (amount minus tax)
-        (amount - tax_total) as net_amount
+        amount - tax_total as net_amount
 
     FROM invoice_cleaning
 ),
@@ -154,82 +161,82 @@ invoice_business_logic AS (
     SELECT
         *,
         
-        -- Outstanding balance (for regular invoices) - NOW invoice_category exists
-        CASE 
-            WHEN invoice_category = 'Regular Invoice' THEN balance
-            ELSE 0.00
-        END as outstanding_balance,
+        -- Outstanding balance (for regular invoices)
+        multiIf(
+            invoice_category = 'Regular Invoice', balance,
+            toDecimal64('0.00', 2)
+        ) as outstanding_balance,
         
         -- Days outstanding (from invoice date to today)
-        CASE 
-            WHEN invoice_date_only IS NOT NULL AND invoice_category = 'Regular Invoice' AND balance > 0
-            THEN (CURRENT_DATE - invoice_date_only)
-            ELSE NULL
-        END as days_outstanding,
+        multiIf(
+            invoice_date_only IS NOT NULL AND invoice_category = 'Regular Invoice' AND balance > toDecimal64('0.00', 2),
+            dateDiff('day', invoice_date_only, today()),
+            CAST(NULL AS Nullable(Int32))
+        ) as days_outstanding,
         
         -- Days until due (or overdue)
-        CASE 
-            WHEN due_date_only IS NOT NULL AND invoice_category = 'Regular Invoice' AND balance > 0
-            THEN (due_date_only - CURRENT_DATE)
-            ELSE NULL
-        END as days_until_due,
+        multiIf(
+            due_date_only IS NOT NULL AND invoice_category = 'Regular Invoice' AND balance > toDecimal64('0.00', 2),
+            dateDiff('day', today(), due_date_only),
+            CAST(NULL AS Nullable(Int32))
+        ) as days_until_due,
         
         -- Aging buckets for AR analysis
-        CASE 
-            WHEN invoice_category != 'Regular Invoice' OR balance = 0 THEN 'Not Applicable'
-            WHEN due_date_only IS NULL THEN 'No Due Date'
-            WHEN due_date_only >= CURRENT_DATE THEN 'Current'
-            WHEN (CURRENT_DATE - due_date_only) <= 30 THEN '1-30 Days Past Due'
-            WHEN (CURRENT_DATE - due_date_only) <= 60 THEN '31-60 Days Past Due'
-            WHEN (CURRENT_DATE - due_date_only) <= 90 THEN '61-90 Days Past Due'
-            ELSE '90+ Days Past Due'
-        END as aging_bucket,
+        multiIf(
+            invoice_category != 'Regular Invoice' OR balance = toDecimal64('0.00', 2), 'Not Applicable',
+            due_date_only IS NULL, 'No Due Date',
+            due_date_only >= today(), 'Current',
+            dateDiff('day', due_date_only, today()) <= 30, '1-30 Days Past Due',
+            dateDiff('day', due_date_only, today()) <= 60, '31-60 Days Past Due',
+            dateDiff('day', due_date_only, today()) <= 90, '61-90 Days Past Due',
+            '90+ Days Past Due'
+        ) as aging_bucket,
         
         -- Invoice size categories
-        CASE 
-            WHEN amount >= 10000 THEN 'Large (10K+)'
-            WHEN amount >= 5000 THEN 'Medium (5K-10K)'
-            WHEN amount >= 1000 THEN 'Small (1K-5K)'
-            WHEN amount > 0 THEN 'Micro (<1K)'
-            ELSE 'Zero/Credit'
-        END as invoice_size_category,
+        multiIf(
+            amount >= toDecimal64('10000.00', 2), 'Large (10K+)',
+            amount >= toDecimal64('5000.00', 2), 'Medium (5K-10K)',
+            amount >= toDecimal64('1000.00', 2), 'Small (1K-5K)',
+            amount > toDecimal64('0.00', 2), 'Micro (<1K)',
+            'Zero/Credit'
+        ) as invoice_size_category,
         
         -- Data quality flags
-        CASE 
-            WHEN customer_id IS NULL OR customer_id = '' THEN 'Missing Customer'
-            WHEN invoice_date_only IS NULL THEN 'Missing Invoice Date'
-            WHEN amount = 0 AND invoice_category = 'Regular Invoice' THEN 'Zero Amount Invoice'
-            WHEN due_date_only IS NULL AND invoice_category = 'Regular Invoice' THEN 'Missing Due Date'
-            ELSE 'Valid'
-        END as data_quality_flag,
+        multiIf(
+            customer_id IS NULL OR customer_id = '', 'Missing Customer',
+            invoice_date_only IS NULL, 'Missing Invoice Date',
+            amount = toDecimal64('0.00', 2) AND invoice_category = 'Regular Invoice', 'Zero Amount Invoice',
+            due_date_only IS NULL AND invoice_category = 'Regular Invoice', 'Missing Due Date',
+            'Valid'
+        ) as data_quality_flag,
         
-        -- Extract year/month for reporting
-        CASE 
-            WHEN invoice_date_only IS NOT NULL 
-            THEN EXTRACT(YEAR FROM invoice_date_only)
-            ELSE NULL
-        END as invoice_year,
+        -- Extract year/month for reporting (ClickHouse compatible)
+        multiIf(
+            invoice_date_only IS NOT NULL,
+            toYear(invoice_date_only),
+            CAST(NULL AS Nullable(UInt16))
+        ) as invoice_year,
         
-        CASE 
-            WHEN invoice_date_only IS NOT NULL 
-            THEN EXTRACT(MONTH FROM invoice_date_only)
-            ELSE NULL
-        END as invoice_month,
+        multiIf(
+            invoice_date_only IS NOT NULL,
+            toMonth(invoice_date_only),
+            CAST(NULL AS Nullable(UInt8))
+        ) as invoice_month,
         
-        CASE 
-            WHEN invoice_date_only IS NOT NULL 
-            THEN EXTRACT(QUARTER FROM invoice_date_only)
-            ELSE NULL
-        END as invoice_quarter,
+        multiIf(
+            invoice_date_only IS NOT NULL,
+            toQuarter(invoice_date_only),
+            CAST(NULL AS Nullable(UInt8))
+        ) as invoice_quarter,
         
         -- Calculate payment percentage
-        CASE 
-            WHEN amount > 0 
-            THEN ROUND((payment_total / amount) * 100, 2)
-            ELSE 0.00
-        END as payment_percentage
+        multiIf(
+            amount > toDecimal64('0.00', 2),
+            round((payment_total / amount) * 100, 2),
+            toDecimal64('0.00', 2)
+        ) as payment_percentage
 
-    FROM invoice_categorization  -- Reference the intermediate CTE
+    FROM invoice_categorization
 )
 
 SELECT * 

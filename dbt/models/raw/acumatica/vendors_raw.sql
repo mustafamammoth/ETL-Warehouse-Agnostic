@@ -1,12 +1,10 @@
--- Raw vendors data with basic filtering and renaming
--- dbt/models/raw/acumatica/vendors_raw.sql
-
+-- Raw vendor data with basic filtering and renaming (bronze layer)
 {{ config(materialized='view') }}
 
-SELECT
-    "id"::TEXT as vendor_id,
+SELECT 
+    id as vendor_guid,
     "rowNumber"::TEXT as row_number,
-    "note"::TEXT as note,
+    note::TEXT,
     "AccountRef"::TEXT as account_ref,
     "APAccount"::TEXT as ap_account,
     "APSubaccount"::TEXT as ap_subaccount,
@@ -43,10 +41,10 @@ SELECT
     "ShippingContactOverride"::TEXT as shipping_contact_override_raw,
     "ShippingTerms"::TEXT as shipping_terms,
     "ShipVia"::TEXT as ship_via,
-    "Status"::TEXT as status_raw,
+    "Status"::TEXT as status,
     "TaxRegistrationID"::TEXT as tax_registration_id,
     "TaxZone"::TEXT as tax_zone,
-    "Terms"::TEXT as terms,
+    "Terms"::TEXT as payment_terms,
     "ThresholdReceipt"::TEXT as threshold_receipt_raw,
     "VendorClass"::TEXT as vendor_class,
     "VendorID"::TEXT as vendor_code,
@@ -54,11 +52,11 @@ SELECT
     "VendorIsTaxAgency"::TEXT as vendor_is_tax_agency_raw,
     "VendorName"::TEXT as vendor_name,
     "Warehouse"::TEXT as warehouse,
-    "custom"::TEXT as custom_raw,
-    "_links"::TEXT as links_raw,
+    custom::TEXT,
+    "_links"::TEXT as source_links,
     "_extracted_at" as extracted_at,
     "_source_system" as source_system,
     "_endpoint" as endpoint
 
-FROM {{ source('acumatica_raw', 'raw_vendors') }}
-WHERE "id" IS NOT NULL
+FROM {{ source('acumatica_raw', 'raw_vendor') }}
+WHERE "VendorID" IS NOT NULL

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3 (generate_docker_compose.py)
 import sys
 import os
 from pathlib import Path
@@ -75,6 +75,8 @@ def generate_docker_compose():
             './dbt:/opt/airflow/dbt',
             './config:/opt/airflow/config',
             './scripts:/opt/airflow/scripts'
+            './extractors:/opt/airflow/extractors'
+
         ]
         
         # Package installation command

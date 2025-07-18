@@ -35,10 +35,48 @@ def generate_profiles_yml():
         with open(profiles_path, 'w') as f:
             yaml.dump(profiles, f, default_flow_style=False, indent=2)
         
+        # Display warehouse-specific info
+        warehouse_type = connection_config['type']
+        host = connection_config.get('host', 'N/A')
+        
+        # Handle different database field names
+        if warehouse_type == 'postgres':
+            database = connection_config.get('dbname', 'N/A')
+            port = connection_config.get('port', 'N/A')
+        elif warehouse_type == 'clickhouse':
+            database = connection_config.get('database', 'N/A')
+            port = connection_config.get('port', 'N/A')
+            secure = connection_config.get('secure', False)
+        elif warehouse_type == 'snowflake':
+            database = connection_config.get('database', 'N/A')
+            warehouse_name = connection_config.get('warehouse', 'N/A')
+            account = connection_config.get('account', 'N/A')
+        else:
+            database = connection_config.get('database', connection_config.get('dbname', 'N/A'))
+            port = connection_config.get('port', 'N/A')
+        
         print(f"✅ Generated {profiles_path} for {warehouse}")
-        print(f"   Warehouse: {connection_config['type']}")
-        print(f"   Host: {connection_config.get('host', 'N/A')}")
-        print(f"   Database: {connection_config.get('dbname', connection_config.get('database', 'N/A'))}")
+        print(f"   Warehouse Type: {warehouse_type}")
+        print(f"   Host: {host}")
+        
+        if warehouse_type == 'snowflake':
+            print(f"   Account: {account}")
+            print(f"   Warehouse: {warehouse_name}")
+            print(f"   Database: {database}")
+        elif warehouse_type == 'clickhouse':
+            print(f"   Database: {database}")
+            print(f"   Port: {port}")
+            print(f"   Secure: {secure}")
+        else:  # postgres
+            print(f"   Database: {database}")
+            print(f"   Port: {port}")
+        
+        # Show the generated config for debugging
+        print(f"\n🔍 Generated dbt profile config:")
+        print(f"   Type: {connection_config['type']}")
+        for key, value in connection_config.items():
+            if 'password' not in key.lower():  # Don't print passwords
+                print(f"   {key}: {value}")
         
         return True
         

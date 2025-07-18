@@ -16,10 +16,30 @@ services:
       interval: 5s
       retries: 5
 
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    environment:
+      CLICKHOUSE_DB: ${CLICKHOUSE_DATABASE}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    ports:
+      - "${CLICKHOUSE_PORT:-8123}:8123"
+      - "9000:9000"
+      - "9440:9440"
+    healthcheck:
+      test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://localhost:8123/ping']
+      interval: 10s
+      retries: 3
+      timeout: 5s
+
   airflow-init:
     image: apache/airflow:2.7.3-python3.11
     depends_on:
       postgres:
+        condition: service_healthy
+      clickhouse:
         condition: service_healthy
     environment: &airflow_common_env
       - AIRFLOW__CORE__EXECUTOR=${AIRFLOW__CORE__EXECUTOR}
@@ -43,7 +63,7 @@ services:
       - REPSLY_BASE_URL=${REPSLY_BASE_URL}
       - REPSLY_USERNAME=${REPSLY_USERNAME}
       - REPSLY_PASSWORD=${REPSLY_PASSWORD}
-      - ACTIVE_WAREHOUSE=postgres
+      - ACTIVE_WAREHOUSE=clickhouse
       - DATABASE_HOST=${DATABASE_HOST}
       - DATABASE_PORT=${DATABASE_PORT}
       - DATABASE_NAME=${DATABASE_NAME}
@@ -72,7 +92,7 @@ services:
     entrypoint: /bin/bash
     command: |
       -c "
-      pip install dbt-postgres psycopg2-binary sqlalchemy
+      pip install dbt-clickhouse clickhouse-connect sqlalchemy
       python /opt/airflow/scripts/generate_dbt_profiles.py
       airflow db migrate
       airflow users create --role Admin --username admin --email admin --firstname admin --lastname admin --password admin
@@ -91,7 +111,7 @@ services:
     entrypoint: /bin/bash
     command: |
       -c "
-      pip install dbt-postgres psycopg2-binary sqlalchemy
+      pip install dbt-clickhouse clickhouse-connect sqlalchemy
       airflow webserver
       "
 
@@ -106,9 +126,10 @@ services:
     entrypoint: /bin/bash
     command: |
       -c "
-      pip install dbt-postgres psycopg2-binary sqlalchemy
+      pip install dbt-clickhouse clickhouse-connect sqlalchemy
       airflow scheduler
       "
 
 volumes:
   postgres_data:
+  clickhouse_data:

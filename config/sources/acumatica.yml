@@ -128,15 +128,23 @@ extraction:
       stock_items:
         max_pages: 50  # Override default max_pages
 
-# Warehouse Configuration
+# Warehouse Configuration - SINGLE SOURCE OF TRUTH
 warehouse:
   # Which warehouse to use
-  active_warehouse: "postgres"  # postgres, snowflake, clickhouse
+  active_warehouse: "clickhouse"  # postgres, snowflake, clickhouse
   
-  # Schema/database organization
+  # MEDALLION ARCHITECTURE - Schema/database organization
   schemas:
-    raw_schema: "public"  # Where raw data goes
-    staging_schema: "public"  # Where transformed data goes
+    # NEW: Bronze layer (raw data from API)
+    bronze_schema: "bronze_acumatica"
+    
+    # NEW: Silver layer (cleaned, validated data)
+    silver_schema: "silver_acumatica"
+    
+    # LEGACY SUPPORT: Temporary aliases for existing code
+    # TODO: Remove these after full migration
+    raw_schema: "bronze_acumatica"       # Points to bronze
+    staging_schema: "silver_acumatica"   # Points to silver
 
 # dbt Configuration
 dbt:
@@ -150,8 +158,9 @@ dbt:
     full_refresh: false  # Set to true for complete rebuild
     threads: 4
     
-  # Model execution order
+  # Model execution order - UPDATED for new schema structure
   model_sequence:
+    # Bronze layer models (raw data with basic cleaning)
     raw_models:
       - "customers_raw"
       - "sales_invoices_raw"
@@ -161,6 +170,7 @@ dbt:
       - "vendors_raw"
       - "purchase_orders_raw"
     
+    # Silver layer models (business logic, validations)
     business_models:
       - "customers"
       - "sales_invoices"

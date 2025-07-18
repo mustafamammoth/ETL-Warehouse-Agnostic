@@ -1,27 +1,27 @@
 data_platform:
   outputs:
     dev:
-      connect_timeout: 10
-      dbname: airflow
-      host: postgres
-      keepalives_idle: 0
-      password: postgres
-      port: 5432
-      retries: 1
-      schema: public
+      connection_timeout: 20
+      host: gxsbrpbg6w.us-east1.gcp.clickhouse.cloud
+      password: 7A8UdbJ4V~7w8
+      port: 8443
+      receive_timeout: 300
+      schema: default
+      secure: true
+      send_timeout: 300
       threads: 4
-      type: postgres
-      user: postgres
+      type: clickhouse
+      user: default
     prod:
-      connect_timeout: 10
-      dbname: airflow
-      host: postgres
-      keepalives_idle: 0
-      password: postgres
-      port: 5432
-      retries: 1
-      schema: public
+      connection_timeout: 20
+      host: gxsbrpbg6w.us-east1.gcp.clickhouse.cloud
+      password: 7A8UdbJ4V~7w8
+      port: 8443
+      receive_timeout: 300
+      schema: default
+      secure: true
+      send_timeout: 300
       threads: 4
-      type: postgres
-      user: postgres
+      type: clickhouse
+      user: default
   target: dev

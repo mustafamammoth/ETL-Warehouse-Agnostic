@@ -3,9 +3,10 @@ warehouse:
   type: "clickhouse"
   
 connection:
-  host: "your-clickhouse.cloud"
-  port: 9440
-  database: "analytics_db"
+  host: "gxsbrpbg6w.us-east1.gcp.clickhouse.cloud"
+  port: 8443
+  database: "default"
   user: "default"
-  password: "your_password"
+  password: "7A8UdbJ4V~7w8"
   secure: true
+  # schema: "bronze_acumatica"
