@@ -98,6 +98,9 @@ extraction:
   # Data paths
   paths:
     raw_data_directory: "/opt/airflow/data/raw/acumatica"
+
+  incremental:
+    state_file: "/opt/airflow/state/acumatica_state.json"
     
   # Endpoints configuration
   endpoints:
