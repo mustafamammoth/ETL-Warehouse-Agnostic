@@ -5,7 +5,7 @@ version: 2
 sources:
   - name: acumatica_raw
     description: Raw data extracted from Acumatica API
-    schema: public  # tells dbt to look in public schema
+    schema: default_bronze_acumatica  # tells dbt to look in public schema
     tables:
       - name: raw_customers
         description: Customer master data from Acumatica

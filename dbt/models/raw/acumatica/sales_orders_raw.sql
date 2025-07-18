@@ -1,4 +1,5 @@
--- Raw sales orders data with basic filtering and renaming
+-- models/bronze/sales_orders_raw.sql
+-- Raw sales orders data with basic filtering and renaming (bronze layer, append-only source)
 {{ config(materialized='view') }}
 
 SELECT 
@@ -49,6 +50,5 @@ SELECT
     "_extracted_at" as extracted_at,
     "_source_system" as source_system,
     "_endpoint" as endpoint
-
 FROM {{ source('acumatica_raw', 'raw_sales_orders') }}
 WHERE "OrderNbr" IS NOT NULL

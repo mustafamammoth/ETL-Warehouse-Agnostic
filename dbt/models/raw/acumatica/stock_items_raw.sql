@@ -1,4 +1,6 @@
--- Raw stock items data with basic filtering and renaming (bronze layer)
+-- models/bronze/stock_items_raw.sql
+-- Raw stock items data (bronze layer) – append-only source view
+-- KEEP every landed row; no dedup here. Upstream incremental extraction limits volume.
 {{ config(materialized='view') }}
 
 SELECT 
@@ -75,6 +77,5 @@ SELECT
     "_extracted_at" as extracted_at,
     "_source_system" as source_system,
     "_endpoint" as endpoint
-
 FROM {{ source('acumatica_raw', 'raw_stock_items') }}
 WHERE "InventoryID" IS NOT NULL

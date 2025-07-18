@@ -1,4 +1,5 @@
--- Raw bills data with basic filtering and renaming (bronze layer)
+-- models/bronze/bills_raw.sql
+-- Raw bills data (bronze layer) – append-only source. Keep everything; filtering only NULL ReferenceNbr.
 {{ config(materialized='view') }}
 
 SELECT 
@@ -31,6 +32,5 @@ SELECT
     "_extracted_at" as extracted_at,
     "_source_system" as source_system,
     "_endpoint" as endpoint
-
 FROM {{ source('acumatica_raw', 'raw_bill') }}
 WHERE "ReferenceNbr" IS NOT NULL

@@ -1,4 +1,6 @@
--- Raw sales invoices data with basic filtering and renaming
+-- models/bronze/sales_invoices_raw.sql
+-- Raw sales invoices data (bronze layer) – append-only source view.
+-- Keep all original fields; minimal filtering (exclude NULL ReferenceNbr).
 {{ config(materialized='view') }}
 
 SELECT 
@@ -32,6 +34,5 @@ SELECT
     "_extracted_at" as extracted_at,
     "_source_system" as source_system,
     "_endpoint" as endpoint
-
 FROM {{ source('acumatica_raw', 'raw_sales_invoices') }}
 WHERE "ReferenceNbr" IS NOT NULL

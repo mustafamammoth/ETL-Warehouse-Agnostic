@@ -88,6 +88,7 @@ services:
       - ./dbt:/opt/airflow/dbt
       - ./config:/opt/airflow/config
       - ./scripts:/opt/airflow/scripts
+      - ./extractors:/opt/airflow/extractors
     user: "${AIRFLOW_UID:-50000}:0"
     entrypoint: /bin/bash
     command: |
