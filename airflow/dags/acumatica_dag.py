@@ -229,8 +229,34 @@ always_extract = config['extraction']['endpoints']['always_extract']
 optional_extract = config['extraction']['endpoints']['optional_extract']
 disabled = config['extraction']['endpoints']['disabled']
 
-ENABLED_ENDPOINTS = {k: v for k, v in ENDPOINTS.items() 
+ENABLED_ENDPOINTS = {k: v for k, v in ENDPOINTS.items()
                     if k in (always_extract + optional_extract) and k not in disabled}
+
+# Incremental loading configuration
+INCREMENTAL_FIELDS = config['extraction']['endpoints'].get('incremental_fields', {})
+TIMESTAMP_FILE = '/opt/airflow/config/state/acumatica_last_timestamps.yml'
+
+
+def get_last_timestamp(endpoint_name):
+    """Retrieve last successful extraction timestamp for an endpoint"""
+    if not os.path.exists(TIMESTAMP_FILE):
+        return None
+    with open(TIMESTAMP_FILE, 'r') as f:
+        data = yaml.safe_load(f) or {}
+    return data.get(endpoint_name)
+
+
+def update_last_timestamp(endpoint_name, timestamp):
+    """Persist last successful extraction timestamp for an endpoint"""
+    os.makedirs(os.path.dirname(TIMESTAMP_FILE), exist_ok=True)
+    if os.path.exists(TIMESTAMP_FILE):
+        with open(TIMESTAMP_FILE, 'r') as f:
+            data = yaml.safe_load(f) or {}
+    else:
+        data = {}
+    data[endpoint_name] = timestamp
+    with open(TIMESTAMP_FILE, 'w') as f:
+        yaml.safe_dump(data, f)
 
 def create_authenticated_session():
     """Create authenticated session for Acumatica"""
@@ -337,14 +363,19 @@ def extract_acumatica_endpoint(endpoint_name, **context):
     
     endpoint_path = ENABLED_ENDPOINTS[endpoint_name]
     print(f"🔄 Extracting {endpoint_name} from {endpoint_path}")
-    
+
     try:
         # Create authenticated session
         session = create_authenticated_session()
-        
-        # Build URL using config
+
+        # Build URL using config and apply incremental filter if available
         endpoint_url = f"{BASE_URL}/{config['api']['entity_endpoint']}/{config['api']['default_version']}/{endpoint_path}"
-        
+
+        incremental_field = INCREMENTAL_FIELDS.get(endpoint_name)
+        last_ts = get_last_timestamp(endpoint_name)
+        if incremental_field and last_ts:
+            endpoint_url = f"{endpoint_url}?$filter={incremental_field} gt {last_ts}"
+
         # Get all data with pagination
         print(f"   Fetching data from: {endpoint_url}")
         raw_data = get_paginated_data(session, endpoint_url, endpoint_name)
@@ -371,9 +402,14 @@ def extract_acumatica_endpoint(endpoint_name, **context):
         
         print(f"✅ {endpoint_name}: Saved {len(df)} records to {filename}")
         print(f"   Sample columns: {list(df.columns)[:10]}")
-        
+
+        # Update last timestamp for incremental loads
+        if incremental_field and not df.empty and incremental_field in df.columns:
+            new_timestamp = str(df[incremental_field].max())
+            update_last_timestamp(endpoint_name, new_timestamp)
+
         return len(df)
-        
+
     except Exception as e:
         print(f"❌ Failed to extract {endpoint_name}: {e}")
         raise
