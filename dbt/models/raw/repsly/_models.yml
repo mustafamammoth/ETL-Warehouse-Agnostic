@@ -1,81 +1,125 @@
 # dbt/models/repsly/_models.yml (repsly schema)
+# CORRECTED: Bronze layer approach with proper field mapping
 
 version: 2
 
 sources:
   - name: repsly_raw
-    description: Raw data extracted from Repsly API
-    schema: repsly  # tells dbt to look in repsly schema
+    description: Raw data extracted from Repsly API (Bronze layer - all text fields)
+    schema: repsly_bronze
     tables:
       - name: raw_clients
-        description: Client master data from Repsly
+        description: Client master data from Repsly - preserved exactly as received
         columns:
+          # FIXED: Match actual API field names from extractor
           - name: ClientID
-            description: Unique client identifier
+            description: Unique client identifier from API
+            tests:
+              - not_null
+          - name: ClientCode
+            description: Unique client code from API  
+          - name: ClientName
+            description: Client business name from API
           - name: TimeStamp
-            description: Client timestamp for incremental updates
-          - name: Code
-            description: Unique client code
-          - name: Name
-            description: Client business name
+            description: Client timestamp for incremental updates (as text)
+          - name: ModifiedDate
+            description: Modified date from API (as text)
           - name: Active
-            description: Marks a client active or inactive
-          - name: Tag
-            description: Tags associated with this client
-          - name: Territory
-            description: Territory hierarchy assignment
+            description: Active flag from API (as text - 'true'/'false')
           - name: RepresentativeCode
-            description: Unique representative code
+            description: Representative code from API
           - name: RepresentativeName
-            description: Representative name
+            description: Representative name from API
           - name: StreetAddress
-            description: Client street address
+            description: Client street address from API
           - name: ZIP
-            description: Client ZIP code
+            description: Client ZIP code from API
           - name: ZIPExt
-            description: Client ZIP extension
+            description: Client ZIP extension from API
           - name: City
-            description: Client city
+            description: Client city from API
           - name: State
-            description: Client state
+            description: Client state from API
           - name: Country
-            description: Client country
+            description: Client country from API
           - name: Email
-            description: Client email address
+            description: Client email address from API
           - name: Phone
-            description: Client phone number
+            description: Client phone number from API
           - name: Mobile
-            description: Client mobile phone number
+            description: Client mobile phone number from API
           - name: Website
-            description: Client website
-          - name: ContactName
-            description: Contact person name
-          - name: ContactTitle
-            description: Contact person title
-          - name: Note
-            description: Additional client note
-          - name: Status
-            description: Client status name in sales cycle
+            description: Client website from API
+          - name: ContactPerson
+            description: Contact person name from API
+          - name: Notes
+            description: Additional client notes from API
+          - name: ClientType
+            description: Client type from API
+          - name: ClientSubType
+            description: Client sub-type from API
+          - name: ClientStatus
+            description: Client status from API
+          - name: Territory
+            description: Territory hierarchy assignment from API
+          - name: Longitude
+            description: GPS longitude coordinate from API (as text)
+          - name: Latitude
+            description: GPS latitude coordinate from API (as text)
+          - name: Tags
+            description: Tags associated with client from API
           - name: CustomFields
-            description: Custom fields as JSON
-          - name: PriceLists
-            description: Price list names as JSON
-          - name: GPSLongitude
-            description: GPS longitude coordinate
-          - name: GPSLatitude
-            description: GPS latitude coordinate
-          - name: AccountCode
-            description: Code of the account assigned to this client
+            description: Custom fields as received from API
+          - name: PaymentTerms
+            description: Payment terms from API
+          - name: CreditLimit
+            description: Credit limit from API (as text)
+          - name: Currency
+            description: Currency from API
+          - name: PriceList
+            description: Price list from API
+          - name: Discount
+            description: Discount from API (as text)
+          - name: CompanyNumber
+            description: Company number from API
+          - name: TaxNumber
+            description: Tax number from API
+          - name: Fax
+            description: Fax number from API
+          - name: LastVisitDate
+            description: Last visit date from API (as text)
+          - name: NextVisitDate
+            description: Next visit date from API (as text)
+          - name: CreatedDate
+            description: Created date from API (as text)
+          # System metadata added by extractor
+          - name: _extracted_at
+            description: When this record was extracted from the API
+            tests:
+              - not_null
+          - name: _source_system
+            description: Source system identifier (repsly)
+          - name: _endpoint
+            description: API endpoint this data came from
+
+        # Freshness check
+        freshness:
+          warn_after: {count: 25, period: hour}
+          error_after: {count: 48, period: hour}
+        loaded_at_field: _extracted_at
 
       - name: raw_client_notes
-        description: Client notes data from Repsly
+        description: Client notes data from Repsly - preserved exactly as received
         columns:
+          # FIXED: Match actual API field names from extractor
           - name: ClientNoteID
-            description: Unique client note identifier
+            description: Unique client note identifier from API
+            tests:
+              - not_null
           - name: TimeStamp
-            description: Note timestamp for incremental updates
+            description: Note timestamp for incremental updates (as text)
           - name: DateAndTime
-            description: Microsoft JSON date format of when note was created
+            description: Microsoft JSON date format from API (as text)
           - name: RepresentativeCode
             description: Code of representative who wrote the note
           - name: RepresentativeName
@@ -105,431 +149,257 @@ sources:
           - name: Territory
             description: Territory hierarchy
           - name: Longitude
-            description: GPS longitude where note was taken
+            description: GPS longitude where note was taken (as text)
           - name: Latitude
-            description: GPS latitude where note was taken
+            description: GPS latitude where note was taken (as text)
           - name: Note
-            description: The actual note content
+            description: The actual note content from API
           - name: VisitID
             description: ID of visit this note belongs to
-
-      - name: raw_visits
-        description: Visits data from Repsly
-        columns:
-          - name: VisitID
-            description: Unique visit identifier
-          - name: TimeStamp
-            description: Visit timestamp for incremental updates
-          - name: Date
-            description: Planned visit date in Microsoft JSON format
-          - name: RepresentativeCode
-            description: Code of representative who made the visit
-          - name: RepresentativeName
-            description: Name of representative who made the visit
-          - name: ExplicitCheckIn
-            description: Whether check-in was explicit
-          - name: DateAndTimeStart
-            description: Actual start time of visit in Microsoft JSON format
-          - name: DateAndTimeEnd
-            description: Actual end time of visit in Microsoft JSON format
-          - name: ClientCode
-            description: Client code for the visit
-          - name: ClientName
-            description: Client name for the visit
-          - name: StreetAddress
-            description: Client address
-          - name: ZIP
-            description: Client ZIP code
-          - name: ZIPExt
-            description: Client ZIP extension
-          - name: City
-            description: Client city
-          - name: State
-            description: Client state
-          - name: Country
-            description: Client country
-          - name: Territory
-            description: Territory hierarchy
-          - name: LatitudeStart
-            description: GPS latitude at visit start
-          - name: LongitudeStart
-            description: GPS longitude at visit start
-          - name: LatitudeEnd
-            description: GPS latitude at visit end
-          - name: LongitudeEnd
-            description: GPS longitude at visit end
-          - name: PrecisionStart
-            description: GPS precision at visit start
-          - name: PrecisionEnd
-            description: GPS precision at visit end
-          - name: VisitStatusBySchedule
-            description: Visit status compared to schedule
-          - name: VisitEnded
-            description: Whether the visit was completed
-
-      - name: raw_daily_working_time
-        description: Daily working time data from Repsly
-        columns:
-          - name: DailyWorkingTimeID
-            description: Unique daily working time identifier
-          - name: Date
-            description: Work date in Microsoft JSON format
-          - name: DateAndTimeStart
-            description: Work start time in Microsoft JSON format
-          - name: DateAndTimeEnd
-            description: Work end time in Microsoft JSON format
-          - name: Length
-            description: Total work length in minutes
-          - name: MileageStart
-            description: Starting mileage reading
-          - name: MileageEnd
-            description: Ending mileage reading
-          - name: MileageTotal
-            description: Total mileage for the day
-          - name: LatitudeStart
-            description: GPS latitude at work start
-          - name: LongitudeStart
-            description: GPS longitude at work start
-          - name: LatitudeEnd
-            description: GPS latitude at work end
-          - name: LongitudeEnd
-            description: GPS longitude at work end
-          - name: RepresentativeCode
-            description: Code of the representative
-          - name: RepresentativeName
-            description: Name of the representative
-          - name: Note
-            description: Work day notes
-          - name: Tag
-            description: Tags for the work day
-          - name: NoOfVisits
-            description: Number of visits made
-          - name: MinOfVisits
-            description: Minimum time for visits
-          - name: MaxOfVisits
-            description: Maximum time for visits
-          - name: MinMaxVisitsTime
-            description: Min/max visit time range
-          - name: TimeAtClient
-            description: Time spent at client locations in minutes
-          - name: TimeInTravel
-            description: Time spent traveling in minutes
-          - name: TimeInPause
-            description: Time spent in pause/break in minutes
-
-      - name: raw_users
-        description: Users/representatives data from Repsly
-        columns:
-          - name: ID
-            description: Unique user identifier (GUID)
-          - name: Code
-            description: User code
-          - name: Name
-            description: User full name
-          - name: Email
-            description: User email address
-          - name: Active
-            description: Whether user is active
-          - name: Role
-            description: User role(s) - can be multiple separated by |
-          - name: Note
-            description: Additional user notes
-          - name: Phone
-            description: User phone number
-          - name: Territories
-            description: Territory assignments as JSON
-          - name: SendEmailEnabled
-            description: Whether user can send emails
-          - name: Address1
-            description: Primary address line
-          - name: Address2
-            description: Secondary address line
-          - name: City
-            description: User city
-          - name: State
-            description: User state
-          - name: ZipCode
-            description: User ZIP code
-          - name: ZipCodeExt
-            description: ZIP code extension
-          - name: Country
-            description: User country
-          - name: CountryCode
-            description: Country code
-          - name: Attributes
-            description: User attributes as JSON
-          - name: Permissions
-            description: User permissions as JSON
-          - name: Teams
-            description: Team assignments as JSON
-          - name: ShowActivitiesWithoutTeam
-            description: Whether to show activities without team assignment
-
-      - name: raw_representatives
-        description: Representatives/users data from Repsly
-        columns:
-          - name: Code
-            description: Representative code
-          - name: Name
-            description: Representative full name
-          - name: Note
-            description: Additional notes about representative
-          - name: Password
-            description: Password field (should be encrypted/hashed)
-          - name: Email
-            description: Representative email address
-          - name: Phone
-            description: Representative phone number
-          - name: Mobile
-            description: Representative mobile phone number
-          - name: Territories
-            description: Territory assignments as JSON array
-          - name: Active
-            description: Whether representative is active
-          - name: Attributes
-            description: Additional attributes as JSON
-          - name: Address1
-            description: Primary address line
-          - name: Address2
-            description: Secondary address line
-          - name: City
-            description: Representative city
-          - name: State
-            description: Representative state
-          - name: ZipCode
-            description: Representative ZIP code
-          - name: ZipCodeExt
-            description: ZIP code extension
-          - name: Country
-            description: Representative country
-          - name: CountryCode
-            description: Country code
-
-      - name: raw_visit_schedule_realizations
-        description: Visit schedule realizations data from Repsly
-        columns:
-          - name: ScheduleId
-            description: Unique schedule identifier (can be null for unplanned visits)
-          - name: ProjectId
-            description: Project identifier (can be null)
-          - name: EmployeeId
-            description: Unique employee identifier (GUID)
-          - name: EmployeeCode
-            description: Employee code/name
-          - name: PlaceId
-            description: Unique place identifier (GUID)
-          - name: PlaceCode
-            description: Place/client code
-          - name: ModifiedUTC
-            description: Last modification timestamp in UTC
-          - name: TimeZone
-            description: Time zone for the visit location
-          - name: ScheduleNote
-            description: Notes associated with the schedule
+          # Additional fields that might be present
+          - name: NoteType
+            description: Type of note from API
+          - name: Priority
+            description: Priority from API (as text)
           - name: Status
-            description: Visit status (planned, unplanned, missed, etc.)
-          - name: DateTimeStart
-            description: Actual visit start time in local timezone
-          - name: DateTimeStartUTC
-            description: Actual visit start time in UTC
-          - name: DateTimeEnd
-            description: Actual visit end time in local timezone
-          - name: DateTimeEndUTC
-            description: Actual visit end time in UTC
-          - name: PlanDateTimeStart
-            description: Planned visit start time in local timezone
-          - name: PlanDateTimeStartUTC
-            description: Planned visit start time in UTC
-          - name: PlanDateTimeEnd
-            description: Planned visit end time in local timezone
-          - name: PlanDateTimeEndUTC
-            description: Planned visit end time in UTC
-          - name: Tasks
-            description: Tasks associated with the visit
+            description: Status from API (as text)
+          - name: Tags
+            description: Tags from API (as text)
+          - name: Attachments
+            description: Attachments from API (as text)
+          - name: Duration
+            description: Duration from API (as text)
+          - name: CreatedBy
+            description: Created by from API
+          - name: ModifiedBy
+            description: Modified by from API
+          - name: ModifiedDate
+            description: Modified date from API (as text)
+          # System metadata added by extractor
+          - name: _extracted_at
+            description: When this record was extracted from the API
+            tests:
+              - not_null
+          - name: _source_system
+            description: Source system identifier (repsly)
+          - name: _endpoint
+            description: API endpoint this data came from
 
-      - name: raw_visit_schedules_extended
-        description: Extended visit schedules data from Repsly
-        columns:
-          - name: ScheduleCode
-            description: Unique schedule identifier
-          - name: ScheduledDate
-            description: Scheduled date in MM/dd/yy format
-          - name: ScheduledTime
-            description: Scheduled time (may be empty for flexible schedules)
-          - name: UserID
-            description: User ID for the representative
-          - name: RepresentativeName
-            description: Representative name (may contain quoted names with tabs)
-          - name: ClientCode
-            description: Client code
-          - name: ClientName
-            description: Client name (may include DBA information)
-          - name: StreetAddress
-            description: Client street address
-          - name: ZIP
-            description: ZIP code
-          - name: ZIPExt
-            description: ZIP code extension
-          - name: City
-            description: City name
-          - name: State
-            description: State abbreviation or name
-          - name: Country
-            description: Country name (various formats)
-          - name: DueDate
-            description: Due date flag (TRUE/FALSE)
-          - name: VisitNote
-            description: Notes for the visit
-          - name: ProjectName
-            description: Associated project name
-          - name: ScheduledDuration
-            description: Scheduled duration in minutes
-          - name: RepeatEveryWeeks
-            description: Repeat interval in weeks
-          - name: RepeatDays
-            description: Days for repeat pattern
-          - name: RepeatEndDate
-            description: End date for repeat pattern
-          - name: AlertUsersIfMissed
-            description: Alert flag for missed visits
-          - name: AlertUsersIfLate
-            description: Alert flag for late visits
-          - name: AlertUsersIfDone
-            description: Alert flag for completed visits
-          - name: ExternalID
-            description: External system identifier
-          - name: Tasks
-            description: Associated tasks
-
-      - name: raw_forms
-        description: Forms data from Repsly
-        columns:
-          - name: FormID
-            description: Unique form identifier
-          - name: FormName
-            description: Name of the form template
-          - name: ClientCode
-            description: Client code
-          - name: ClientName
-            description: Client name
-          - name: DateAndTime
-            description: Form submission timestamp (Microsoft JSON format)
-          - name: RepresentativeCode
-            description: Representative code
-          - name: RepresentativeName
-            description: Representative name
-          - name: VisitStart
-            description: Visit start time (Microsoft JSON format)
-          - name: VisitEnd
-            description: Visit end time (Microsoft JSON format)
-          - name: Items
-            description: Form fields and responses as JSON array
-          - name: VisitID
-            description: Associated visit ID
-
-      - name: raw_photos
-        description: Photos data from Repsly
-        columns:
-          - name: PhotoID
-            description: Unique photo identifier
-          - name: ClientCode
-            description: Client code
-          - name: ClientName
-            description: Client name
-          - name: Note
-            description: Photo description/note
-          - name: DateAndTime
-            description: Photo timestamp (Microsoft JSON format)
-          - name: PhotoURL
-            description: S3 URL for the photo
-          - name: RepresentativeCode
-            description: Representative code
-          - name: RepresentativeName
-            description: Representative name
-          - name: VisitID
-            description: Associated visit ID
-          - name: Tag
-            description: Photo tags (comma-separated)
-
-      - name: raw_visit_schedules
-        description: Visit schedules data from Repsly
-        columns:
-          - name: ScheduleDateAndTime
-            description: Scheduled date and time (Microsoft JSON format)
-          - name: RepresentativeCode
-            description: Representative code
-          - name: RepresentativeName
-            description: Representative name
-          - name: ClientCode
-            description: Client code
-          - name: ClientName
-            description: Client name (may include DBA information)
-          - name: StreetAddress
-            description: Client street address
-          - name: ZIP
-            description: ZIP code
-          - name: City
-            description: City name
-          - name: State
-            description: State
-          - name: Country
-            description: Country
-          - name: DueDate
-            description: Due date flag
-          - name: VisitNote
-            description: Visit notes
+        freshness:
+          warn_after: {count: 25, period: hour}
+          error_after: {count: 48, period: hour}
+        loaded_at_field: _extracted_at
 
 models:
+  # BRONZE/RAW LAYER MODELS
   - name: clients_raw
-    description: Raw client data with basic filtering and renaming
+    description: Raw client data - bronze layer (all fields as text, minimal transformation)
     columns:
       - name: client_id
-        description: Clean client ID
+        description: Client ID preserved as text from API
         tests:
           - not_null
           - unique
-      - name: code
-        description: Unique client code
-        tests:
-          - not_null
-      - name: name
-        description: Client business name
-        tests:
-          - not_null
+      - name: client_code
+        description: Client code preserved as text from API
+      - name: client_name
+        description: Client name preserved as text from API
+      - name: timestamp_raw
+        description: Raw timestamp field as text
+      - name: modified_date_raw
+        description: Raw modified date as text
       - name: active_raw
-        description: Raw active flag as text
+        description: Raw active flag as text (e.g., 'true', 'false', '')
       - name: representative_code
-        description: Representative code
+        description: Representative code as text
       - name: representative_name
-        description: Representative name
+        description: Representative name as text
+      - name: street_address
+        description: Street address as text
+      - name: zip_code
+        description: ZIP code as text
+      - name: zip_ext
+        description: ZIP extension as text
+      - name: city
+        description: City as text
+      - name: state
+        description: State as text
+      - name: country
+        description: Country as text
       - name: email
-        description: Client email address
+        description: Email address as text
       - name: phone
-        description: Client phone number
-      - name: gps_longitude_raw
-        description: Raw GPS longitude as text
-      - name: gps_latitude_raw
-        description: Raw GPS latitude as text
+        description: Phone number as text
+      - name: mobile
+        description: Mobile number as text
+      - name: website
+        description: Website as text
+      - name: contact_person
+        description: Contact person as text
+      - name: notes_raw
+        description: Notes as text
+      - name: client_type
+        description: Client type as text
+      - name: client_sub_type
+        description: Client sub-type as text
+      - name: client_status
+        description: Client status as text
+      - name: territory
+        description: Territory as text
+      - name: longitude_raw
+        description: Longitude as text (no conversion in bronze)
+      - name: latitude_raw
+        description: Latitude as text (no conversion in bronze)
+      - name: tags_raw
+        description: Tags as text
+      - name: custom_fields_raw
+        description: Custom fields as text
+      - name: payment_terms
+        description: Payment terms as text
+      - name: credit_limit_raw
+        description: Credit limit as text
+      - name: currency
+        description: Currency as text
+      - name: price_list
+        description: Price list as text
+      - name: discount_raw
+        description: Discount as text
+      - name: company_number
+        description: Company number as text
+      - name: tax_number
+        description: Tax number as text
+      - name: fax
+        description: Fax as text
+      - name: last_visit_date_raw
+        description: Last visit date as text
+      - name: next_visit_date_raw
+        description: Next visit date as text
+      - name: created_date_raw
+        description: Created date as text
+      # System metadata
+      - name: extracted_at
+        description: Extraction timestamp as text
+        tests:
+          - not_null
+      - name: source_system
+        description: Source system identifier
+      - name: endpoint
+        description: API endpoint used
+      - name: dbt_extracted_at
+        description: Parsed extraction timestamp for dbt processing
+        tests:
+          - not_null
+      - name: dbt_updated_at
+        description: When this record was last processed by dbt
+      - name: record_hash
+        description: Hash for change detection
 
+  - name: client_notes_raw
+    description: Raw client notes data - bronze layer (all fields as text, minimal transformation)
+    columns:
+      - name: client_note_id
+        description: Client note ID preserved as text from API
+        tests:
+          - not_null
+          - unique
+      - name: timestamp_raw
+        description: Raw timestamp field as text
+      - name: date_and_time_raw
+        description: Raw Microsoft JSON date as text
+      - name: representative_code
+        description: Representative code as text
+      - name: representative_name
+        description: Representative name as text
+      - name: client_code
+        description: Client code as text
+        tests:
+          - not_null
+      - name: client_name
+        description: Client name as text
+      - name: street_address
+        description: Street address as text
+      - name: zip_code
+        description: ZIP code as text
+      - name: zip_ext
+        description: ZIP extension as text
+      - name: city
+        description: City as text
+      - name: state
+        description: State as text
+      - name: country
+        description: Country as text
+      - name: email
+        description: Email as text
+      - name: phone
+        description: Phone as text
+      - name: mobile
+        description: Mobile as text
+      - name: territory
+        description: Territory as text
+      - name: longitude_raw
+        description: Longitude as text (no conversion in bronze)
+      - name: latitude_raw
+        description: Latitude as text (no conversion in bronze)
+      - name: note_raw
+        description: Note content preserved exactly as received
+      - name: visit_id
+        description: Visit ID as text
+      - name: note_type
+        description: Note type as text
+      - name: priority_raw
+        description: Priority as text
+      - name: status_raw
+        description: Status as text
+      - name: tags_raw
+        description: Tags as text
+      - name: attachments_raw
+        description: Attachments as text
+      - name: duration_raw
+        description: Duration as text
+      - name: created_by
+        description: Created by as text
+      - name: modified_by
+        description: Modified by as text
+      - name: modified_date_raw
+        description: Modified date as text
+      # System metadata
+      - name: extracted_at
+        description: Extraction timestamp as text
+        tests:
+          - not_null
+      - name: source_system
+        description: Source system identifier
+      - name: endpoint
+        description: API endpoint used
+      - name: dbt_extracted_at
+        description: Parsed extraction timestamp for dbt processing
+        tests:
+          - not_null
+      - name: dbt_updated_at
+        description: When this record was last processed by dbt
+      - name: record_hash
+        description: Hash for change detection
+
+  # SILVER LAYER MODELS (CLEANED AND PARSED)
   - name: clients
-    description: Cleaned and enhanced client data
+    description: Cleaned and enhanced client data - silver layer (parsed fields, business logic)
     columns:
       - name: client_id
         description: Clean client identifier
         tests:
           - not_null
           - unique
-      - name: code
+      - name: client_code
         description: Unique client code
         tests:
           - not_null
           - unique
-      - name: name
+      - name: client_name
         description: Cleaned client name
         tests:
           - not_null
       - name: is_active
-        description: Active status as boolean
+        description: Active status as boolean (parsed from text)
         tests:
           - not_null
       - name: representative_code
@@ -537,65 +407,73 @@ models:
       - name: representative_name
         description: Representative name
       - name: full_address
-        description: Concatenated full address
+        description: Concatenated full address (derived)
       - name: email_clean
         description: Cleaned and validated email
       - name: phone_clean
-        description: Cleaned phone number
-      - name: gps_longitude
-        description: GPS longitude as decimal
-      - name: gps_latitude
-        description: GPS latitude as decimal
+        description: Cleaned phone number (10 digits)
+      - name: mobile_clean
+        description: Cleaned mobile number (10 digits)
+      - name: longitude
+        description: GPS longitude as decimal (parsed from text)
+      - name: latitude
+        description: GPS latitude as decimal (parsed from text)
+      - name: has_valid_gps_coordinates
+        description: Whether GPS coordinates are valid
+        tests:
+          - not_null
       - name: client_tier
-        description: Client tier classification
+        description: Client tier classification (derived)
         tests:
           - accepted_values:
               values: ['Enterprise', 'Premium', 'Standard', 'Basic', 'Unknown']
       - name: territory_level_1
-        description: Top level territory
+        description: Top level territory (parsed)
       - name: territory_level_2
-        description: Second level territory
+        description: Second level territory (parsed)
+      - name: state_standardized
+        description: Standardized state name (derived)
+      - name: country_standardized
+        description: Standardized country name (derived)
       - name: address_quality
-        description: Address completeness assessment
+        description: Address completeness assessment (derived)
         tests:
           - accepted_values:
               values: ['Complete', 'Partial', 'Minimal', 'Missing']
       - name: contact_quality
-        description: Contact information quality
+        description: Contact information quality (derived)
         tests:
           - accepted_values:
               values: ['Excellent', 'Good', 'Fair', 'Poor']
+      - name: data_completeness_score
+        description: Overall data completeness score 0-100 (derived)
+      - name: last_visit_date
+        description: Last visit date (parsed from text)
+      - name: next_visit_date
+        description: Next visit date (parsed from text)
+      - name: created_date
+        description: Created date (parsed from text)
+      - name: modified_date
+        description: Modified date (parsed from text)
+      - name: credit_limit
+        description: Credit limit as decimal (parsed from text)
+      - name: discount_percentage
+        description: Discount as percentage (parsed from text)
       - name: data_quality_flag
-        description: Overall data quality assessment
+        description: Overall data quality assessment (derived)
         tests:
           - accepted_values:
               values: ['High Quality', 'Good Quality', 'Needs Improvement', 'Poor Quality']
-
-  - name: client_notes_raw
-    description: Raw client notes data with basic filtering and renaming
-    columns:
-      - name: client_note_id
-        description: Clean client note ID
-        tests:
-          - not_null
-          - unique
-      - name: client_code
-        description: Client code this note belongs to
-        tests:
-          - not_null
-      - name: representative_code
-        description: Representative code who wrote the note
-      - name: representative_name
-        description: Representative name who wrote the note
-      - name: note
-        description: The actual note content
-      - name: visit_id
-        description: Associated visit ID
-      - name: date_and_time_raw
-        description: Raw Microsoft JSON date format
+      # Metadata
+      - name: processed_at
+        description: When this record was processed in silver layer
+      - name: extracted_at
+        description: Original extraction timestamp
+      - name: record_hash
+        description: Hash from bronze layer
 
   - name: client_notes
-    description: Cleaned and enhanced client notes data
+    description: Cleaned and enhanced client notes data - silver layer (parsed fields, business logic)
     columns:
       - name: client_note_id
         description: Clean client note identifier
@@ -611,1169 +489,84 @@ models:
       - name: representative_name
         description: Representative name who wrote the note
       - name: note_cleaned
-        description: Cleaned note content
+        description: Cleaned note content (whitespace normalized)
       - name: note_datetime
-        description: Parsed datetime when note was created
+        description: Parsed datetime when note was created (from Microsoft JSON)
         tests:
           - not_null
       - name: note_date
         description: Date when note was created
         tests:
           - not_null
-      - name: note_category
-        description: Categorized note type
+      - name: note_year
+        description: Year when note was created
+      - name: note_month
+        description: Month when note was created
+      - name: note_day_of_week
+        description: Day of week when note was created (1=Monday)
+      - name: note_hour
+        description: Hour when note was created (0-23)
+      - name: day_of_week_name
+        description: Day of week name
         tests:
           - accepted_values:
-              values: ['Inventory Issue', 'Ordering', 'Promotion', 'Display/Demo', 'Staff Interaction', 'Availability', 'Training', 'Product Discussion', 'General']
+              values: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday', 'Unknown']
+      - name: time_of_day
+        description: Time of day categorization
+        tests:
+          - accepted_values:
+              values: ['Morning', 'Afternoon', 'Evening', 'Other', 'Unknown']
+      - name: note_category
+        description: Categorized note type (derived from content analysis)
+        tests:
+          - accepted_values:
+              values: ['Inventory Issue', 'Ordering', 'Promotion', 'Display/Demo', 'Staff Interaction', 'Availability', 'Training', 'Product Discussion', 'General', 'No Content']
       - name: note_sentiment
-        description: Basic sentiment analysis
+        description: Basic sentiment analysis (derived)
         tests:
           - accepted_values:
               values: ['Positive', 'Negative', 'Neutral']
       - name: business_priority
-        description: Business priority level
+        description: Business priority level (derived)
         tests:
           - accepted_values:
               values: ['High', 'Medium', 'Low']
       - name: note_quality
-        description: Note quality assessment
+        description: Note quality assessment (derived)
         tests:
           - accepted_values:
               values: ['Detailed', 'Adequate', 'Brief', 'Minimal', 'Empty']
-      - name: time_of_day
-        description: Time of day categorization
-        tests:
-          - accepted_values:
-              values: ['Morning', 'Afternoon', 'Evening', 'Other']
-      - name: day_of_week_name
-        description: Day of week when note was written
-      - name: territory_level_1
-        description: Top level territory
-      - name: territory_level_2
-        description: Second level territory
-      - name: state_standardized
-        description: Standardized state name
       - name: note_length
         description: Length of note in characters
-      - name: data_completeness_score
-        description: Data completeness score (0-100)
-
-  - name: daily_working_time_raw
-    description: Raw daily working time data with basic filtering and renaming
-    columns:
-      - name: daily_working_time_id
-        description: Clean daily working time ID
-        tests:
-          - not_null
-          - unique
-      - name: representative_code
-        description: Representative code
-        tests:
-          - not_null
-      - name: representative_name
-        description: Representative name
-      - name: date_raw
-        description: Raw work date in Microsoft JSON format
-      - name: date_and_time_start_raw
-        description: Raw start time in Microsoft JSON format
-      - name: date_and_time_end_raw
-        description: Raw end time in Microsoft JSON format
-      - name: length_raw
-        description: Raw work length as text
-      - name: mileage_total_raw
-        description: Raw total mileage as text
-      - name: no_of_visits_raw
-        description: Raw number of visits as text
-
-  - name: daily_working_time
-    description: Cleaned and enhanced daily working time data
-    columns:
-      - name: daily_working_time_id
-        description: Clean daily working time identifier
-        tests:
-          - not_null
-          - unique
-      - name: representative_code
-        description: Representative code
-        tests:
-          - not_null
-      - name: representative_name
-        description: Representative name
-        tests:
-          - not_null
-      - name: work_date
-        description: Date of work
-        tests:
-          - not_null
-      - name: work_start_datetime
-        description: Work start datetime
-      - name: work_end_datetime
-        description: Work end datetime
-      - name: actual_work_duration_minutes
-        description: Actual work duration in minutes
-      - name: number_of_visits
-        description: Number of client visits made
-      - name: time_at_client_minutes
-        description: Time spent at client locations in minutes
-      - name: time_in_travel_minutes
-        description: Time spent traveling in minutes
-      - name: time_in_pause_minutes
-        description: Time spent in pause/break in minutes
-      - name: mileage_total
-        description: Total mileage for the day
-      - name: client_time_percentage
-        description: Percentage of work time spent with clients
-      - name: travel_time_percentage
-        description: Percentage of work time spent traveling
-      - name: work_duration_category
-        description: Categorized work duration
-        tests:
-          - accepted_values:
-              values: ['No Work Time', 'Very Short (<1 hour)', 'Short (1-4 hours)', 'Standard (4-8 hours)', 'Long (8-10 hours)', 'Very Long (10+ hours)']
-      - name: start_time_category
-        description: Categorized start time
-        tests:
-          - accepted_values:
-              values: ['Unknown Start', 'Early Start (5-8 AM)', 'Morning Start (9-11 AM)', 'Afternoon Start (12-2 PM)', 'Late Start (3-5 PM)', 'Other Start Time']
-      - name: visit_productivity_category
-        description: Categorized visit productivity
-        tests:
-          - accepted_values:
-              values: ['No Visits', 'Single Visit', 'Few Visits (2-3)', 'Multiple Visits (4-6)', 'Many Visits (7+)']
-      - name: efficiency_rating
-        description: Work efficiency rating
-        tests:
-          - accepted_values:
-              values: ['High Efficiency', 'Good Efficiency', 'Moderate Efficiency', 'Low Efficiency', 'No Client Time']
-      - name: mileage_category
-        description: Categorized mileage
-        tests:
-          - accepted_values:
-              values: ['No Mileage', 'Low Mileage (<50)', 'Medium Mileage (50-150)', 'High Mileage (150-300)', 'Very High Mileage (300+)']
-      - name: work_day_type
-        description: Type of work day
-        tests:
-          - accepted_values:
-              values: ['Weekday', 'Weekend', 'Unknown']
-      - name: day_of_week_name
-        description: Day of week when work occurred
-      - name: work_completion_status
-        description: Whether work day was completed
-        tests:
-          - accepted_values:
-              values: ['Ongoing/Incomplete', 'Completed', 'Unknown']
-      - name: gps_data_quality
-        description: GPS data completeness
-        tests:
-          - accepted_values:
-              values: ['Complete GPS', 'Partial GPS (Start Only)', 'Partial GPS (End Only)', 'No GPS']
-      - name: minutes_per_visit
-        description: Average minutes per visit
-      - name: mileage_per_visit
-        description: Average mileage per visit
-      - name: data_completeness_score
-        description: Data completeness score (0-100)
-
-  - name: users_raw
-    description: Raw users data with basic filtering and renaming
-    columns:
-      - name: user_id
-        description: Clean user ID (GUID)
-        tests:
-          - not_null
-          - unique
-      - name: code
-        description: User code
-      - name: name
-        description: User full name
-        tests:
-          - not_null
-      - name: email
-        description: User email address
-      - name: active_raw
-        description: Raw active flag as text
-      - name: role_raw
-        description: Raw role information
-      - name: phone
-        description: User phone number
-      - name: territories_json
-        description: Territory assignments as JSON
-      - name: permissions_json
-        description: User permissions as JSON
-
-  - name: users
-    description: Cleaned and enhanced users data
-    columns:
-      - name: user_id
-        description: Clean user identifier (GUID)
-        tests:
-          - not_null
-          - unique
-      - name: code
-        description: User code
-      - name: name
-        description: User full name
-        tests:
-          - not_null
-      - name: email_clean
-        description: Cleaned and validated email
-      - name: phone_clean
-        description: Cleaned phone number
-      - name: is_active
-        description: Active status as boolean
-        tests:
-          - not_null
-      - name: primary_role
-        description: Primary user role
-        tests:
-          - accepted_values:
-              values: ['Admin', 'Representative', '']
-      - name: user_type
-        description: User type classification
-        tests:
-          - accepted_values:
-              values: ['Admin Representative', 'Admin Only', 'Representative Only', 'Other']
-      - name: user_status
-        description: User status classification
-        tests:
-          - accepted_values:
-              values: ['Active', 'Inactive', 'Active - No Email', 'Deactivated Account', 'Unknown Status']
-      - name: company_affiliation
-        description: Company affiliation based on email domain
-        tests:
-          - accepted_values:
-              values: ['Mammoth Distribution', 'Repsly (External)', 'Test Account', 'External', 'Unknown']
-      - name: is_admin
-        description: Whether user has admin role
-        tests:
-          - not_null
-      - name: is_representative
-        description: Whether user has representative role
-        tests:
-          - not_null
-      - name: is_test_account
-        description: Whether this is a test account
-        tests:
-          - not_null
-      - name: address_quality
-        description: Address completeness assessment
-        tests:
-          - accepted_values:
-              values: ['Complete', 'Partial', 'Minimal', 'Missing']
-      - name: contact_quality
-        description: Contact information quality
-        tests:
-          - accepted_values:
-              values: ['Excellent', 'Good', 'Email Only', 'Phone Only', 'Poor']
-      - name: permission_level
-        description: Permission level assessment
-        tests:
-          - accepted_values:
-              values: ['No Permissions', 'Full Permissions', 'Limited Permissions', 'Basic Permissions']
-      - name: territory_scope
-        description: Territory assignment scope
-        tests:
-          - accepted_values:
-              values: ['All Territories', 'Specific Territories', 'No Territory Assignment']
-      - name: access_level
-        description: Security access level
-        tests:
-          - accepted_values:
-              values: ['High Access', 'Admin Access', 'Field Access', 'Limited Access']
-      - name: email_domain
-        description: Email domain for company analysis
-      - name: first_name
-        description: Parsed first name
-      - name: last_name
-        description: Parsed last name
-      - name: full_address
-        description: Concatenated full address
-      - name: data_completeness_score
-        description: Data completeness score (0-100)
-
-  - name: representatives_raw
-    description: Raw representatives data with basic filtering and renaming
-    columns:
-      - name: code
-        description: Representative code
-      - name: name
-        description: Representative full name
-        tests:
-          - not_null
-      - name: note
-        description: Additional notes about representative
-      - name: password_raw
-        description: Raw password field (should be encrypted)
-      - name: email
-        description: Representative email address
-      - name: phone
-        description: Representative phone number
-      - name: mobile
-        description: Representative mobile phone number
-      - name: territories_json
-        description: Territory assignments as JSON array
-      - name: active_raw
-        description: Raw active flag as text
-      - name: attributes_json
-        description: Additional attributes as JSON
-      - name: address1
-        description: Primary address line
-      - name: address2
-        description: Secondary address line
-      - name: city
-        description: Representative city
-      - name: state
-        description: Representative state
-      - name: zip_code
-        description: Representative ZIP code
-      - name: zip_code_ext
-        description: ZIP code extension
-      - name: country
-        description: Representative country
-      - name: country_code
-        description: Country code
-
-  - name: representatives
-    description: Cleaned and enhanced representatives data
-    columns:
-      - name: representative_code
-        description: Clean representative code
-        tests:
-          - unique
-      - name: representative_name
-        description: Clean representative name
-        tests:
-          - not_null
-      - name: note
-        description: Additional notes about representative
-      - name: email_clean
-        description: Cleaned and validated email address
-      - name: phone_clean
-        description: Cleaned phone number (10 digits)
-      - name: mobile_clean
-        description: Cleaned mobile number (10 digits)
-      - name: is_active
-        description: Active status as boolean
-        tests:
-          - not_null
-      - name: full_address
-        description: Concatenated full address
-      - name: email_domain
-        description: Email domain for company analysis
-      - name: first_name
-        description: Parsed first name
-      - name: last_name
-        description: Parsed last name
-      - name: primary_territory
-        description: Primary territory assignment
-      - name: territory_count
-        description: Number of territories assigned
-      - name: company_affiliation
-        description: Company affiliation based on email domain
-        tests:
-          - accepted_values:
-              values: ['Mammoth Distribution', '710 Labs', 'Pure Beauty', 'Heavy Hitters', 'Repsly (External)', 'Test Account', 'External', 'Unknown']
-      - name: representative_type
-        description: Representative type based on territories
-        tests:
-          - accepted_values:
-              values: ['710 Labs Representative', 'Mammoth CA Representative', 'California Representative', 'Colorado Representative', 'Michigan Representative', 'New York Representative', 'Multi-Territory Representative', 'Single Territory Representative', 'No Territory Assignment']
-      - name: representative_status
-        description: Activity and contact status
-        tests:
-          - accepted_values:
-              values: ['Active', 'Active - No Email', 'Inactive', 'Unknown Status']
-      - name: contact_quality
-        description: Contact information quality assessment
-        tests:
-          - accepted_values:
-              values: ['Excellent', 'Good', 'Phone Only', 'Poor']
-      - name: address_quality
-        description: Address completeness assessment
-        tests:
-          - accepted_values:
-              values: ['Complete', 'Partial', 'Minimal', 'Missing']
-      - name: territory_scope
-        description: Territory assignment scope
-        tests:
-          - accepted_values:
-              values: ['Multi-Regional', 'Dual Territory', 'Single Territory', 'No Territory']
-      - name: representative_tier
-        description: Representative tier classification
-        tests:
-          - accepted_values:
-              values: ['Internal - Primary', 'Partner - Primary', 'External - Active', 'Active - Unassigned', 'Inactive/Unknown']
-      - name: geographic_region
-        description: Geographic region based on primary territory
-        tests:
-          - accepted_values:
-              values: ['West Coast', 'Mountain West', 'Midwest', 'Northeast', 'Other/Unknown']
-      - name: primary_contact_method
-        description: Primary contact method available
-        tests:
-          - accepted_values:
-              values: ['Email', 'Mobile', 'Phone', 'No Contact Method']
-      - name: has_contact_info
-        description: Whether representative has any contact information
-        tests:
-          - not_null
-      - name: specialization
-        description: Representative specialization area
-        tests:
-          - accepted_values:
-              values: ['710 Labs Specialist', 'Mammoth Internal', 'Multi-Regional Specialist', 'Territory Specialist', 'General Representative']
-      - name: data_completeness_score
-        description: Data completeness score (0-100)
-        tests:
-          - not_null
-
-  - name: visit_schedule_realizations_raw
-    description: Raw visit schedule realizations data with basic filtering and renaming
-    columns:
-      - name: schedule_id
-        description: Clean schedule ID (can be null for unplanned visits)
-      - name: project_id
-        description: Clean project ID (can be null)
-      - name: employee_id
-        description: Clean employee ID (GUID)
-        tests:
-          - not_null
-      - name: employee_code
-        description: Employee code/name
-        tests:
-          - not_null
-      - name: place_id
-        description: Clean place ID (GUID)
-        tests:
-          - not_null
-      - name: place_code
-        description: Place/client code
-        tests:
-          - not_null
-      - name: modified_utc_raw
-        description: Raw modification timestamp
-      - name: time_zone
-        description: Time zone for the visit location
-      - name: schedule_note
-        description: Schedule notes
-      - name: status_raw
-        description: Raw visit status
-      - name: date_time_start_raw
-        description: Raw actual start time
-      - name: date_time_start_utc_raw
-        description: Raw actual start time UTC
-      - name: date_time_end_raw
-        description: Raw actual end time
-      - name: date_time_end_utc_raw
-        description: Raw actual end time UTC
-      - name: plan_date_time_start_raw
-        description: Raw planned start time
-      - name: plan_date_time_start_utc_raw
-        description: Raw planned start time UTC
-      - name: plan_date_time_end_raw
-        description: Raw planned end time
-      - name: plan_date_time_end_utc_raw
-        description: Raw planned end time UTC
-      - name: tasks_raw
-        description: Raw tasks data
-
-  - name: visit_schedule_realizations
-    description: Cleaned and enhanced visit schedule realizations data
-    columns:
-      - name: schedule_id
-        description: Clean schedule identifier
-      - name: project_id
-        description: Clean project identifier
-      - name: employee_id
-        description: Clean employee identifier (GUID)
-        tests:
-          - not_null
-      - name: employee_code
-        description: Employee code/name
-        tests:
-          - not_null
-      - name: employee_name_clean
-        description: Cleaned employee name (handles quoted names)
-      - name: place_id
-        description: Clean place identifier (GUID)
-        tests:
-          - not_null
-      - name: place_code
-        description: Place/client code
-        tests:
-          - not_null
-      - name: time_zone
-        description: Original time zone
-      - name: time_zone_standard
-        description: Standardized time zone name
-        tests:
-          - accepted_values:
-              values: ['Eastern', 'Pacific', 'Central', 'Mountain']
-      - name: schedule_note
-        description: Schedule notes
-      - name: visit_status
-        description: Standardized visit status
-        tests:
-          - accepted_values:
-              values: ['Planned', 'Unplanned', 'Missed', 'Cancelled', 'Completed', 'Unknown']
-      - name: modified_utc
-        description: Last modification timestamp in UTC
-      - name: actual_start_datetime
-        description: Actual visit start time in local timezone
-      - name: actual_start_utc
-        description: Actual visit start time in UTC
-      - name: actual_end_datetime
-        description: Actual visit end time in local timezone
-      - name: actual_end_utc
-        description: Actual visit end time in UTC
-      - name: planned_start_datetime
-        description: Planned visit start time in local timezone
-      - name: planned_start_utc
-        description: Planned visit start time in UTC
-      - name: planned_end_datetime
-        description: Planned visit end time in local timezone
-      - name: planned_end_utc
-        description: Planned visit end time in UTC
-      - name: actual_date
-        description: Date of actual visit
-      - name: planned_date
-        description: Date of planned visit
-      - name: actual_duration_minutes
-        description: Actual visit duration in minutes
-      - name: planned_duration_minutes
-        description: Planned visit duration in minutes
-      - name: start_variance_minutes
-        description: Start time variance (actual vs planned) in minutes
-      - name: end_variance_minutes
-        description: End time variance (actual vs planned) in minutes
-      - name: actual_start_hour
-        description: Hour of actual start time (0-23)
-      - name: actual_day_of_week
-        description: Day of week for actual visit (0=Sunday, 6=Saturday)
-      - name: actual_year
-        description: Year of actual visit
-      - name: actual_month
-        description: Month of actual visit
-      - name: actual_time_of_day
-        description: Time of day categorization for actual visit
-        tests:
-          - accepted_values:
-              values: ['Morning', 'Afternoon', 'Evening', 'Other']
-      - name: actual_day_of_week_name
-        description: Day of week name for actual visit
-        tests:
-          - accepted_values:
-              values: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
-      - name: visit_type
-        description: Visit type classification
-        tests:
-          - accepted_values:
-              values: ['Planned & Executed', 'Planned Only', 'Unplanned Visit', 'Missed Visit', 'Other']
-      - name: duration_category
-        description: Duration categorization
-        tests:
-          - accepted_values:
-              values: ['No Duration Data', 'Very Short (< 5 min)', 'Short (5-15 min)', 'Medium (15-30 min)', 'Long (30-60 min)', 'Very Long (60+ min)']
-      - name: timing_performance
-        description: Timing performance vs plan
-        tests:
-          - accepted_values:
-              values: ['No Comparison', 'On Time', 'Late Start', 'Early Start']
-      - name: schedule_adherence
-        description: Overall schedule adherence rating
-        tests:
-          - accepted_values:
-              values: ['Poor Adherence', 'No Execution', 'Good Adherence', 'Fair Adherence']
-      - name: data_quality
-        description: Data quality assessment
-        tests:
-          - accepted_values:
-              values: ['Complete Data', 'Good Data', 'Partial Data', 'Limited Data']
-      - name: work_day_type
-        description: Work day type classification
-        tests:
-          - accepted_values:
-              values: ['Weekend', 'Weekday']
-      - name: geographic_region
-        description: Geographic region based on timezone
-        tests:
-          - accepted_values:
-              values: ['West Coast', 'Mountain Region', 'Central Region', 'East Coast', 'Other Region']
-      - name: has_schedule_id
-        description: Whether schedule ID is present
-        tests:
-          - not_null
-      - name: has_project_id
-        description: Whether project ID is present
-        tests:
-          - not_null
-      - name: has_actual_times
-        description: Whether actual visit times are present
-        tests:
-          - not_null
-      - name: has_planned_times
-        description: Whether planned visit times are present
-        tests:
-          - not_null
-      - name: has_notes
-        description: Whether schedule notes are present
-        tests:
-          - not_null
-      - name: tasks
-        description: Tasks associated with the visit
-      - name: data_completeness_score
-        description: Data completeness score (0-100)
-      - name: extracted_at
-        description: Timestamp when data was extracted
-      - name: source_system
-        description: Source system identifier
-      - name: endpoint
-        description: API endpoint used for extraction
-
-  - name: visit_schedules_extended_raw
-    description: Raw visit schedules extended data with basic filtering and renaming
-    columns:
-      - name: schedule_code
-        description: Schedule identifier
-        tests:
-          - not_null
-          - unique
-      - name: user_id
-        description: User ID for the representative
-      - name: representative_name
-        description: Raw representative name
-      - name: client_code
-        description: Client code
-        tests:
-          - not_null
-      - name: client_name
-        description: Client name
-        tests:
-          - not_null
-      - name: scheduled_date_raw
-        description: Raw scheduled date
-      - name: scheduled_duration_raw
-        description: Raw scheduled duration
-      - name: repeat_every_weeks_raw
-        description: Raw repeat weeks
-      - name: alert_users_if_missed_raw
-        description: Raw missed alert flag
-      - name: alert_users_if_late_raw
-        description: Raw late alert flag
-      - name: alert_users_if_done_raw
-        description: Raw done alert flag
-
-  - name: visit_schedules_extended
-    description: Cleaned and enhanced visit schedules extended data
-    columns:
-      - name: schedule_code
-        description: Schedule identifier
-        tests:
-          - not_null
-          - unique
-      - name: user_id
-        description: User ID for the representative
-      - name: representative_name
-        description: Cleaned representative name (handles quoted names)
-        tests:
-          - not_null
-      - name: client_code
-        description: Client code
-        tests:
-          - not_null
-      - name: client_name
-        description: Full client name
-        tests:
-          - not_null
-      - name: legal_name
-        description: Legal business name (before DBA)
-      - name: dba_name
-        description: DBA (Doing Business As) name
-      - name: street_address
-        description: Street address
-      - name: city
-        description: City name
-      - name: state
-        description: Original state
+      - name: territory_level_1
+        description: Top level territory (parsed)
+      - name: territory_level_2
+        description: Second level territory (parsed)
       - name: state_standardized
-        description: Standardized state name
-      - name: country_standardized
-        description: Standardized country name
-      - name: full_address
-        description: Complete formatted address
-      - name: scheduled_date
-        description: Parsed scheduled date
-      - name: scheduled_duration_minutes
-        description: Scheduled duration in minutes
-      - name: repeat_every_weeks
-        description: Repeat interval in weeks
-      - name: visit_note
-        description: Visit notes
-      - name: project_name
-        description: Associated project name
-      - name: external_id
-        description: External system identifier
-      - name: alert_users_if_missed
-        description: Alert if visit is missed
-        tests:
-          - not_null
-      - name: alert_users_if_late
-        description: Alert if visit is late
-        tests:
-          - not_null
-      - name: alert_users_if_done
-        description: Alert when visit is completed
-        tests:
-          - not_null
-      - name: scheduled_day_of_week
-        description: Day of week for scheduled date (0=Sunday)
-      - name: scheduled_year
-        description: Year of scheduled date
-      - name: scheduled_month
-        description: Month of scheduled date
-      - name: scheduled_day_of_week_name
-        description: Day of week name
-        tests:
-          - accepted_values:
-              values: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
-      - name: work_day_type
-        description: Work day classification
-        tests:
-          - accepted_values:
-              values: ['Weekend', 'Weekday']
-      - name: duration_category
-        description: Duration categorization
-        tests:
-          - accepted_values:
-              values: ['No Duration Set', 'Quick Visit (≤15 min)', 'Short Visit (16-30 min)', 'Standard Visit (31-60 min)', 'Long Visit (60+ min)']
-      - name: schedule_type
-        description: Schedule type classification
-        tests:
-          - accepted_values:
-              values: ['Recurring Schedule', 'Project-Based', 'One-time Visit']
-      - name: geographic_region
-        description: Geographic region classification
-        tests:
-          - accepted_values:
-              values: ['California', 'New York', 'Texas', 'Florida', 'Other States']
-      - name: client_business_type
-        description: Client business type classification
-        tests:
-          - accepted_values:
-              values: ['Corporate Client (DBA)', 'Business Entity', 'Standard Business']
-      - name: alert_configuration
-        description: Alert configuration level
-        tests:
-          - accepted_values:
-              values: ['Full Alert Coverage', 'Monitoring Alerts', 'Completion Tracking', 'No Alerts']
-      - name: schedule_complexity
-        description: Schedule complexity assessment
-        tests:
-          - accepted_values:
-              values: ['Complex Schedule', 'Structured Schedule', 'Basic Schedule', 'Simple Schedule']
-      - name: rep_workload_category
-        description: Representative workload category
-        tests:
-          - accepted_values:
-              values: ['High Volume Rep', 'Medium Volume Rep', 'Low Volume Rep']
-      - name: data_completeness_level
-        description: Data completeness assessment
-        tests:
-          - accepted_values:
-              values: ['Complete Data', 'Good Data', 'Partial Data', 'Minimal Data']
-      - name: has_visit_notes
-        description: Whether visit has notes
-        tests:
-          - not_null
-      - name: has_project_assignment
-        description: Whether assigned to a project
-        tests:
-          - not_null
-      - name: is_recurring_schedule
-        description: Whether this is a recurring schedule
-        tests:
-          - not_null
-      - name: has_any_alerts
-        description: Whether any alerts are configured
-        tests:
-          - not_null
-      - name: has_complete_address
-        description: Whether has complete address data
-        tests:
-          - not_null
-      - name: data_completeness_score
-        description: Data completeness score (0-100)
-      - name: extracted_at
-        description: Timestamp when data was extracted
-      - name: source_system
-        description: Source system identifier
-      - name: endpoint
-        description: API endpoint used for extraction
-
-  - name: forms_raw
-    description: Raw forms data with basic filtering and renaming
-    columns:
-      - name: form_id
-        description: Form identifier
-        tests:
-          - not_null
-          - unique
-      - name: visit_id
-        description: Associated visit ID
-        tests:
-          - not_null
-      - name: client_code
-        description: Client code
-        tests:
-          - not_null
-      - name: items_raw
-        description: Raw JSON items data
-
-  - name: forms_staging
-    description: Forms with cleaned scalars and parsed timestamps
-    columns:
-      - name: form_id
-        description: Form identifier
-        tests:
-          - not_null
-          - unique
-      - name: visit_id
-        description: Associated visit ID
-        tests:
-          - not_null
-      - name: client_name
-        description: Client name
-        tests:
-          - not_null
-      - name: representative_name
-        description: Representative name
-        tests:
-          - not_null
-      - name: visit_start_ts
-        description: Parsed visit start timestamp
-      - name: visit_end_ts
-        description: Parsed visit end timestamp
-      - name: minutes_on_site
-        description: Visit duration in minutes
-      - name: state
-        description: Standardized state name
+        description: Standardized state name (derived)
       - name: longitude
-        description: GPS longitude
+        description: GPS longitude as decimal (parsed from text)
       - name: latitude
-        description: GPS latitude
-
-  - name: form_items
-    description: Form fields exploded into individual rows
-    columns:
-      - name: form_id
-        description: Form identifier
+        description: GPS latitude as decimal (parsed from text)
+      - name: has_valid_gps_coordinates
+        description: Whether GPS coordinates are valid
         tests:
           - not_null
-      - name: visit_id
-        description: Associated visit ID
-        tests:
-          - not_null
-      - name: item_ordinal
-        description: Order of item in form
-        tests:
-          - not_null
-      - name: field
-        description: Form field name
-        tests:
-          - not_null
-      - name: value
-        description: Form field response value
-        tests:
-          - not_null
-
-  - name: forms_business
-    description: Business-ready forms view with key metrics
-    columns:
-      - name: form_id
-        description: Form identifier
-        tests:
-          - not_null
-          - unique
-      - name: visit_id
-        description: Associated visit ID
-        tests:
-          - not_null
-      - name: client_name
-        description: Client name
-        tests:
-          - not_null
-      - name: representative_name
-        description: Representative name
-        tests:
-          - not_null
-      - name: visit_date
-        description: Date of visit
-      - name: minutes_on_site
-        description: Visit duration in minutes
-      - name: needs_follow_up
-        description: Whether follow-up is needed
-        tests:
-          - not_null
-      - name: out_of_stock
-        description: Whether client is out of stock
-        tests:
-          - not_null
-      - name: carries_thcv_gummies
-        description: Whether client carries THCv gummies
-        tests:
-          - not_null
-      - name: has_retail_kit
-        description: Whether client has retail kit
-        tests:
-          - not_null
-      - name: doing_education
-        description: Whether education was provided
-        tests:
-          - not_null
-      - name: presentation_quality
-        description: Retail presentation quality rating
-      - name: spoke_with
-        description: Who representative spoke with
-      - name: photos_taken
-        description: Number of photos taken during visit
-      - name: presentation_category
-        description: Categorized presentation quality
-        tests:
-          - accepted_values:
-              values: ['Good', 'Better', 'Average', 'Unknown']
-      - name: visit_duration_category
-        description: Categorized visit duration
-        tests:
-          - accepted_values:
-              values: ['Quick Visit (<10 min)', 'Standard Visit (10-30 min)', 'Long Visit (30+ min)', 'Unknown Duration']
-      - name: priority_level
-        description: Visit priority based on follow-up and stock status
-        tests:
-          - accepted_values:
-              values: ['High Priority', 'Medium Priority', 'Standard Visit']
-      - name: has_gps_location
-        description: Whether GPS coordinates are available
-        tests:
-          - not_null
-
-  - name: photos_raw
-    description: Raw photos data with basic filtering and renaming
-    columns:
-      - name: photo_id
-        description: Photo identifier
-        tests:
-          - not_null
-          - unique
-      - name: visit_id
-        description: Associated visit ID
-        tests:
-          - not_null
-      - name: client_code
-        description: Client code
-        tests:
-          - not_null
-      - name: photo_url
-        description: S3 URL for the photo
-        tests:
-          - not_null
-      - name: date_and_time_raw
-        description: Raw photo timestamp
-
-  - name: photos
-    description: Cleaned and categorized photos data
-    columns:
-      - name: photo_id
-        description: Photo identifier
-        tests:
-          - not_null
-          - unique
-      - name: visit_id
-        description: Associated visit ID
-        tests:
-          - not_null
-      - name: client_code
-        description: Client code
-        tests:
-          - not_null
-      - name: client_name
-        description: Client name
-        tests:
-          - not_null
-      - name: representative_code
-        description: Representative code
-      - name: representative_name
-        description: Representative name
-        tests:
-          - not_null
-      - name: photo_url
-        description: S3 URL for the photo
-        tests:
-          - not_null
-      - name: note
-        description: Photo description/note
-      - name: photo_timestamp
-        description: Parsed photo timestamp
-      - name: photo_date
-        description: Date when photo was taken
-      - name: tags_raw
-        description: Raw tags string
-      - name: is_competition_photo
-        description: Whether photo shows competition
-        tests:
-          - not_null
-      - name: is_display_photo
-        description: Whether photo shows display
-        tests:
-          - not_null
-      - name: is_marketing_photo
-        description: Whether photo is for marketing
-        tests:
-          - not_null
-      - name: is_social_media_worthy
-        description: Whether photo is social media worthy
-        tests:
-          - not_null
-      - name: photo_category
-        description: Categorized photo type
-        tests:
-          - accepted_values:
-              values: ['Competition & Display', 'Competition Analysis', 'Display Documentation', 'Marketing Content', 'Social Media Content', 'General Documentation', 'Other']
-      - name: has_note
-        description: Whether photo has descriptive note
-        tests:
-          - not_null
-      - name: is_valid_url
-        description: Whether photo URL is valid S3 URL
-        tests:
-          - not_null
-      - name: photo_hour
-        description: Hour when photo was taken (0-23)
-      - name: time_of_day
-        description: Time of day categorization
-        tests:
-          - accepted_values:
-              values: ['Morning', 'Afternoon', 'Evening', 'Other']
-      - name: business_priority
-        description: Business priority for photo usage
-        tests:
-          - accepted_values:
-              values: ['High Priority', 'Medium Priority', 'Standard']
-      - name: extracted_at
-        description: Timestamp when data was extracted
-      - name: source_system
-        description: Source system identifier
-
-  - name: visit_schedules_raw
-    description: Raw visit schedules data with basic filtering and renaming
-    columns:
-      - name: representative_code
-        description: Representative code
-        tests:
-          - not_null
-      - name: representative_name
-        description: Representative name
-        tests:
-          - not_null
-      - name: client_code
-        description: Client code
-        tests:
-          - not_null
-      - name: client_name
-        description: Client name
-        tests:
-          - not_null
-      - name: schedule_date_and_time_raw
-        description: Raw scheduled datetime
-
-  - name: visit_schedules
-    description: Cleaned and enhanced visit schedules data
-    columns:
-      - name: representative_code
-        description: Representative code
-        tests:
-          - not_null
-      - name: representative_name
-        description: Representative name
-        tests:
-          - not_null
-      - name: client_code
-        description: Client code
-        tests:
-          - not_null
-      - name: client_name
-        description: Full client name
-        tests:
-          - not_null
-      - name: legal_name
-        description: Legal business name (before DBA)
-      - name: dba_name
-        description: DBA (Doing Business As) name
-      - name: street_address
-        description: Street address
-      - name: city
-        description: City name
-      - name: state
-        description: Original state
-      - name: state_standardized
-        description: Standardized state name
-      - name: country_standardized
-        description: Standardized country name
       - name: full_address
-        description: Complete formatted address
-      - name: scheduled_datetime
-        description: Parsed scheduled datetime
-      - name: scheduled_date
-        description: Scheduled date
-      - name: is_due_date
-        description: Whether this is marked as due date
-        tests:
-          - not_null
-      - name: visit_note
-        description: Visit notes
-      - name: scheduled_day_of_week
-        description: Day of week (0=Sunday)
-      - name: scheduled_hour
-        description: Hour of scheduled time (0-23)
-      - name: day_of_week_name
-        description: Day of week name
-        tests:
-          - accepted_values:
-              values: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
-      - name: work_day_type
-        description: Work day classification
-        tests:
-          - accepted_values:
-              values: ['Weekend', 'Weekday']
-      - name: time_of_day
-        description: Time of day categorization
-        tests:
-          - accepted_values:
-              values: ['Morning', 'Afternoon', 'Evening', 'Other']
-      - name: geographic_region
-        description: Geographic region classification
-        tests:
-          - accepted_values:
-              values: ['California', 'New York', 'Other States']
-      - name: client_business_type
-        description: Client business type classification
-        tests:
-          - accepted_values:
-              values: ['Corporate Client (DBA)', 'Business Entity', 'Standard Business']
-      - name: has_visit_notes
-        description: Whether visit has notes
-        tests:
-          - not_null
-      - name: has_complete_address
-        description: Whether has complete address data
-        tests:
-          - not_null
-      - name: has_valid_datetime
-        description: Whether has valid datetime
-        tests:
-          - not_null
+        description: Concatenated full address (derived)
       - name: data_completeness_score
-        description: Data completeness score (0-100)
+        description: Data completeness score 0-100 (derived)
+      - name: date_validation_status
+        description: Date validation result
+        tests:
+          - accepted_values:
+              values: ['Valid', 'Missing Date', 'Date Too Old', 'Future Date']
+      - name: visit_id
+        description: Associated visit ID
+      # Metadata
+      - name: processed_at
+        description: When this record was processed in silver layer
       - name: extracted_at
-        description: Timestamp when data was extracted
-      - name: source_system
-        description: Source system identifier
+        description: Original extraction timestamp
+      - name: record_hash
+        description: Hash from bronze layer

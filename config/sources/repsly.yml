@@ -1,196 +1,266 @@
-# repsly.yml - Configuration for Repsly DAG
-# ==========================================
+# repsly.yml - Fixed configuration for production reliability
 
-# DAG Configuration
 dag:
-  # Basic DAG settings
   dag_id: "repsly_extract_transform"
-  description: "Extract from Repsly API and transform with dbt"
+  description: "Extract from Repsly API and transform with dbt (incremental, production-ready)"
   owner: "data-team"
-  
-  # Schedule Configuration
   schedule:
-    # Options: daily, weekly, monthly, hourly, cron, manual
-    type: "daily"
-    time: "02:00"  # 2 AM UTC
-    timezone: "UTC"  # or "America/Los_Angeles", etc.
-    
-    # Alternative cron expression (if type: "cron")
-    # cron_expression: "0 2 * * *"  # Daily at 2 AM
-    
-    # Weekly schedule (if type: "weekly")
-    # day_of_week: "monday"  # monday, tuesday, etc.
-    # time: "17:00"  # 5 PM
-    
-    # Monthly schedule (if type: "monthly")
-    # day_of_month: 1  # 1st of every month
-    # time: "03:00"
-  
-  # DAG Behavior
-  catchup: false
-  max_active_runs: 1
-  start_date: "2025-07-16"
-  
-  # Retry Configuration
-  retries: 2
+    type: "daily"        # Changed from manual to ensure regular runs
+    time: "03:00"        # 3 AM UTC
+    timezone: "UTC"
+  max_active_runs: 1     # CRITICAL: Prevent concurrent runs
+  start_date: "2025-07-18"
+  retries: 1             # Reduced retries to prevent state corruption
   retry_delay_minutes: 10
-  
-  # Email Configuration
   email_on_failure: true
   email_on_retry: false
-  email_on_success: true  # Optional success notifications
-  
-  # Tags for organization
+  email_on_success: true
   tags:
     - "repsly"
     - "extract"
-    - "transform" 
+    - "transform"
     - "dbt"
-    - "production"  # or "testing"
+    - "incremental"
+    - "production"
 
-# Notification Configuration
 notifications:
   email:
-    # Primary contacts for failures
     failure_recipients:
       - "mustafa.zaki@mammoth.org"
-    
-    # Success notifications (optional)
     success_recipients:
       - "mustafa.zaki@mammoth.org"
-    
-    # Retry notifications (usually fewer people)
     retry_recipients:
       - "mustafa.zaki@mammoth.org"
 
-# API Configuration
 api:
   base_url: "https://api.repsly.com/v3"
-  
-  # Credentials (should be environment variables)
-  # credentials:
-  #   username_env_var: "REPSLY_USERNAME"
-  #   password_env_var: "REPSLY_PASSWORD"
-  
-  # Rate limiting and retry settings
-  rate_limiting:
-    requests_per_second: 10
-    max_retries: 3
-    backoff_factor: 1.5
-    timeout_seconds: 30
-  
-  # Connection testing
   test_endpoint: "export/clients/0"
+  rate_limiting:
+    requests_per_second: 5         # REDUCED: More conservative rate limiting
+    max_retries: 3
+    backoff_factor: 2.0            # Increased backoff
+    timeout_seconds: 60            # Increased timeout for large responses
 
-# Extraction Configuration
 extraction:
-  # Testing vs Production mode
-  mode: "testing"  # "testing" or "production"
-  
+  mode: "production"  # FIXED: Changed from testing to production
+  incremental:
+    enabled: true
+    lookback_minutes: 30           # INCREASED: More overlap to prevent gaps
+    full_refresh_days: 90          # Trigger full refresh every 90 days
+    state_path: "/opt/airflow/state/repsly_watermarks.json"
   testing:
-    max_records_per_endpoint: 50
-    date_range_days: 30  # For date-range endpoints
-    
+    max_records_per_endpoint: 100  # Increased for better testing
+    date_range_days: 7             # Reduced for faster testing
   production:
-    max_records_per_endpoint: null  # No limit
-    date_range_days: 365  # Last year for initial load
-    
-  # Data paths
+    max_records_per_endpoint: null # No limit in production
+    date_range_days: 365           # Full year for initial load
   paths:
     raw_data_directory: "/opt/airflow/data/raw/repsly"
-    
-  # Extraction behavior
-  parallel_extraction: false  # Set to true for parallel endpoint extraction
-  
-  # Endpoints configuration
+
   endpoints:
-    # Core endpoints (always enabled)
+    # FIXED: Core endpoints that must always work
     always_extract:
-      - "clients"
-      - "visits"
-      - "representatives"
-      - "users"
+      - "clients"          # Highest priority - other data depends on this
+      - "client_notes"     # High priority - main business data
     
-    # Optional endpoints (can be disabled)
+    # Optional endpoints (can be enabled when needed)
     optional_extract:
-      - "client_notes"
-      - "daily_working_time" 
-      - "products"
-      - "retail_audits"
-      - "purchase_orders"
-      - "forms"
-      - "photos"
-      - "visit_schedules"
-      - "visit_schedules_extended"
-      - "visit_schedule_realizations"
-      - "document_types"
-      - "pricelists"
-      - "pricelist_items"
+      - "daily_working_time"
+      # - "visits"
+      # - "representatives"  
+      # - "users"
+      # - "products"
+      # - "retail_audits"
+      # - "purchase_orders"
+      # - "forms"
+      # - "photos"
+      # - "visit_schedules"
+      # - "visit_schedules_extended"
+      # - "visit_schedule_realizations"
+      # - "document_types"
+      # - "pricelists"
+      # - "pricelist_items"
     
-    # Disabled endpoints (skip these)
+    # Disabled endpoints (known issues or not needed)
     disabled:
-      - "import_job_status"  # Example of disabled endpoint
-    
-    # Custom endpoint settings
-    custom_settings:
-      visit_schedule_realizations:
-        max_pages: 200  # Override default max_pages
-        skip_limit: 9500  # API limitation
-        
-      photos:
-        priority: "high"  # Process this endpoint first
-        
-      forms:
-        require_validation: true  # Add extra validation for this endpoint
+      - "photos"              # Large data volume, can cause memory issues
+      - "visit_schedule_realizations"  # Complex pagination issues
+      
+    # FIXED: Endpoint dependencies and priorities
+    dependencies:
+      client_notes:
+        depends_on: ["clients"]
+        priority: "high"
+      visits:
+        depends_on: ["clients", "representatives"]  
+        priority: "medium"
+      daily_working_time:
+        depends_on: ["representatives"]
+        priority: "low"
 
-# Warehouse Configuration
 warehouse:
-  # Which warehouse to use
-  active_warehouse: "postgres"  # postgres, snowflake, clickhouse
-  
-  # Schema/database organization
+  active_warehouse: "clickhouse"
   schemas:
-    raw_schema: "repsly"
-    staging_schema: "public"  # Where transformed data goes
+    bronze_schema: "repsly_bronze"
+    silver_schema: "repsly_silver"
+    raw_schema: "repsly_bronze"      # Alias for compatibility
+    staging_schema: "repsly_silver"  # Alias for compatibility
+  
+  # ADDED: Warehouse-specific settings
+  clickhouse:
+    chunk_size: 1000               # Batch size for large inserts
+    connection_pool_size: 5
+    max_retries: 3
+    partition_strategy: "by_date"   # Partition tables by extraction date
 
-# dbt Configuration
 dbt:
-  # dbt project settings
   project_dir: "/opt/airflow/dbt"
   profiles_dir: "/opt/airflow/dbt"
-  
-  # dbt execution settings
   execution:
-    fail_fast: false
-    full_refresh: false  # Set to true for complete rebuild
-    threads: 4
+    fail_fast: true               # CHANGED: Fail fast to catch issues early
+    full_refresh: false
+    threads: 2                    # REDUCED: More conservative threading
 
-# Feature Flags
+# ENHANCED: Data quality settings
+data_quality:
+  enabled: true
+  validation:
+    # Record count validation
+    record_count:
+      enabled: true
+      tolerance_percent: 5        # Allow 5% variance
+    
+    # Duplicate detection
+    duplicate_check:
+      enabled: true
+      critical_endpoints: ["clients", "client_notes"]
+      
+    # Null value checks  
+    null_checks:
+      enabled: true
+      critical_fields:
+        clients: ["ClientCode", "ClientName"]
+        client_notes: ["ClientNoteID", "ClientCode"]
+      max_null_percent: 10        # Fail if >10% nulls
+    
+    # Data freshness
+    freshness:
+      enabled: true
+      max_age_hours: 26          # Data must be <26 hours old
+      
+    # Business logic validation
+    business_rules:
+      enabled: true
+      min_note_length: 5         # Notes should have some content
+      valid_date_range_years: 5   # Dates within 5 years
+
+# ENHANCED: Feature flags for controlled rollout
 features:
-  # New feature toggles
-  enable_parallel_extraction: false
+  enable_parallel_extraction: false      # DISABLED: Sequential for reliability
   enable_data_lineage_tracking: false
-  enable_advanced_monitoring: false
-  enable_auto_recovery: false
+  enable_advanced_monitoring: true       # ENABLED: Better observability
+  enable_auto_recovery: false            # DISABLED: Manual intervention preferred
   
   # Experimental features
   experimental:
-    use_new_pagination_logic: false
-    enable_smart_scheduling: false  # Adjust schedule based on data patterns
-    use_ml_data_validation: false
+    use_chunked_warehouse_loading: true   # ENABLED: Handle large datasets
+    enable_smart_scheduling: false
+    use_enhanced_error_handling: true     # ENABLED: Better error recovery
+    enable_state_validation: true        # ENABLED: Validate state file integrity
 
-# Maintenance Configuration
+# ENHANCED: Maintenance and monitoring
 maintenance:
-  # Cleanup settings
   cleanup:
     delete_old_csv_files: true
-    csv_retention_days: 7
+    csv_retention_days: 3             # REDUCED: Less storage usage
     
     delete_old_logs: true
-    log_retention_days: 30
+    log_retention_days: 14            # REDUCED: 2 weeks
     
-  # Health checks
   health_checks:
     verify_endpoints_accessible: true
     check_warehouse_connectivity: true
     validate_dbt_compilation: true
+    check_state_file_integrity: true   # ADDED: Verify state file health
+    
+  monitoring:
+    send_daily_health_report: true
+    alert_on_data_quality_issues: true
+    alert_on_extraction_failures: true
+    warehouse_health_check_enabled: true
+
+# ENHANCED: Repsly-specific configurations
+repsly_specific:
+  # Pagination limits to prevent infinite loops
+  pagination_limits:
+    visit_schedule_realizations:
+      max_skip: 9500
+      page_size: 50
+      max_pages: 190
+      retry_attempts: 3
+      
+    # ADDED: Global pagination safety
+    global_max_pages: 1000        # Prevent infinite pagination
+    max_consecutive_failures: 3   # Stop after 3 consecutive page failures
+      
+  # Date range handling to prevent API timeouts
+  date_ranges:
+    visit_schedules:
+      max_range_days: 30          # REDUCED: Smaller chunks
+      overlap_days: 1
+      
+    visit_schedules_extended:
+      max_range_days: 30          # REDUCED: Smaller chunks  
+      overlap_days: 1
+      
+    # ADDED: Global date range safety
+    max_initial_range_days: 90    # Limit initial full refresh
+
+  # ENHANCED: Error handling and recovery
+  error_handling:
+    max_consecutive_failures: 3
+    failure_backoff_minutes: 60    # INCREASED: More conservative backoff
+    skip_endpoint_on_repeated_failure: true
+    
+    # ADDED: Specific error recovery strategies
+    api_error_recovery:
+      retry_on_timeout: true
+      retry_on_rate_limit: true
+      retry_on_server_error: true
+      max_retries_per_endpoint: 3
+      
+    # ADDED: State management safety
+    state_management:
+      backup_state_before_run: true
+      validate_state_after_update: true
+      rollback_on_warehouse_failure: true
+
+# ADDED: Performance and reliability settings  
+performance:
+  memory_management:
+    max_dataframe_size_mb: 500    # Limit DataFrame memory usage
+    enable_chunked_processing: true
+    chunk_size_rows: 1000
+    
+  connection_management:
+    connection_timeout_seconds: 60
+    max_connection_retries: 3
+    connection_pool_enabled: true
+    
+  # Monitoring and alerting
+  monitoring:
+    log_memory_usage: true
+    log_processing_times: true
+    alert_on_slow_performance: true
+    performance_baseline_minutes: 30  # Alert if pipeline takes >30min
+
+# ADDED: Security and compliance
+security:
+  data_privacy:
+    log_sensitive_fields: false   # Don't log PII in logs
+    mask_credentials: true        # Mask credentials in logs
+    
+  audit:
+    log_all_api_calls: false     # Performance vs audit trade-off
+    log_data_access: true
+    retention_days: 90

@@ -1,15 +1,16 @@
-# acumatica.yml - Configuration for Acumatica DAG (incremental enabled)
+# acumatica.yml - Configuration for Acumatica DAG (incremental enabled, fixed)
 
 dag:
   dag_id: "acumatica_extract_transform"
-  description: "Extract from Acumatica API and transform with dbt"
+  description: "Extract from Acumatica API and transform with dbt (incremental)"
   owner: "data-team"
   schedule:
-    type: "weekly"        # can switch to 'hourly' / 'daily'
+    type: "daily"        # hourly | daily | weekly | monthly | manual | cron
+    time: "02:00"        # For daily/weekly/monthly schedules
     timezone: "UTC"
   max_active_runs: 1
   start_date: "2025-07-18"
-  retries: 1
+  retries: 2
   retry_delay_minutes: 5
   email_on_failure: true
   email_on_retry: false
@@ -19,7 +20,7 @@ dag:
     - "extract"
     - "transform"
     - "dbt"
-    - "production"
+    - "incremental"
 
 notifications:
   email:
@@ -35,86 +36,139 @@ api:
   entity_endpoint: "entity/Default"
   auth_endpoint: "entity/auth/login"
   rate_limiting:
-    requests_per_second: 10
+    requests_per_second: 8        # Conservative rate limit
     max_retries: 3
-    backoff_factor: 1.5
-    timeout_seconds: 30
+    backoff_factor: 2.0          # Exponential backoff
+    timeout_seconds: 60          # Increased timeout
   pagination:
     default_page_size: 100
     max_page_size: 1000
 
 extraction:
-  mode: "testing"  # "testing" | "production"
+  mode: "production"  # "testing" | "production"
   incremental:
     enabled: true
     default_timestamp_field: "LastModifiedDateTime"
-    lookback_minutes: 5
-    full_refresh_days: 7          # (can be used later to trigger forced full)
+    lookback_minutes: 10         # Increased lookback for safety
+    full_refresh_days: 30        # Trigger full refresh every 30 days
     state_path: "/opt/airflow/state/acumatica_watermarks.json"
   testing:
-    max_records_per_endpoint: 100
+    max_records_per_endpoint: 50
   production:
     max_records_per_endpoint: null
   paths:
     raw_data_directory: "/opt/airflow/data/raw/acumatica"
 
   endpoints:
-    customers:
-      path: "Customer"
+    # High-frequency endpoints (multiple times per day)
+    sales_invoices:
+      path: "api/odata/dac/SOInvoice"
       enabled: true
       priority: "high"
       schedule:
-        times: ["00:00", "06:00", "12:00", "18:00"]
+        times: ["02:00", "08:00", "14:00", "20:00"]
       custom:
         incremental: true
         timestamp_field: "LastModifiedDateTime"
-    sales_invoices:
-      path: "SalesInvoice"
-      enabled: true
-      schedule:
-        times: ["01:00", "05:00", "09:00", "13:00", "17:00", "21:00"]
-      custom:
-        incremental: true
-        timestamp_field: "LastModifiedDateTime"
-        require_validation: true
-    sales_orders:
-      path: "SalesOrder"
-      enabled: true
-      schedule:
-        times: ["02:00", "10:00", "18:00"]
-      custom:
-        incremental: true
-    stock_items:
-      path: "StockItem"
-      enabled: true
-      schedule:
-        times: ["03:00"]
-      custom:
-        incremental: true
-        max_pages: 50
+        max_pages: 200
+    
     bill:
       path: "Bill"
       enabled: true
+      priority: "high"
+      schedule:
+        times: ["02:30", "08:30", "14:30", "20:30"]
       custom:
         incremental: true
-    vendor:
-      path: "Vendor"
+        timestamp_field: "LastModifiedDateTime"
+        max_pages: 200
+    
+    sales_orders:
+      path: "api/odata/dac/SOOrder"
       enabled: true
+      priority: "medium"
+      # schedule:
+      #   times: ["03:00", "09:00", "15:00", "21:00"]
       custom:
         incremental: true
+        timestamp_field: "LastModifiedDateTime"
+        max_pages: 150
+    
     purchase_order:
       path: "PurchaseOrder"
       enabled: true
+      priority: "medium"
+      schedule:
+        times: ["03:30", "09:30", "15:30", "21:30"]
       custom:
         incremental: true
+        timestamp_field: "LastModifiedDateTime"
+        max_pages: 150
+    
+    # Medium-frequency endpoints (daily)
+    customers:
+      path: "Customer"
+      enabled: true
+      priority: "medium"
+      schedule:
+        times: ["04:00"]
+      custom:
+        incremental: true
+        timestamp_field: "LastModifiedDateTime"
+        max_pages: 100
+    
+    vendor:
+      path: "Vendor"
+      enabled: true
+      priority: "medium"
+      schedule:
+        times: ["04:30"]
+      custom:
+        incremental: true
+        timestamp_field: "LastModifiedDateTime"
+        max_pages: 100
+    
+    # Low-frequency endpoints (less frequent updates)
+    stock_items:
+      path: "StockItem"
+      enabled: true
+      priority: "low"
+      schedule:
+        times: ["05:00"]
+      custom:
+        incremental: true
+        timestamp_field: "LastModifiedDateTime"
+        max_pages: 300
+    
+    # Additional endpoints (can be enabled as needed)
+    purchase_receipts:
+      path: "PurchaseReceipt"
+      enabled: false
+      custom:
+        incremental: true
+        timestamp_field: "LastModifiedDateTime"
+    
+    shipments:
+      path: "Shipment"
+      enabled: false
+      custom:
+        incremental: true
+        timestamp_field: "LastModifiedDateTime"
+    
+    payments:
+      path: "Payment"
+      enabled: false
+      custom:
+        incremental: true
+        timestamp_field: "LastModifiedDateTime"
 
 warehouse:
   active_warehouse: "clickhouse"
   schemas:
-    bronze_schema: "default_bronze_acumatica"
-    silver_schema: "default_silver_acumatica"
-    raw_schema: "default_bronze_acumatica"
-    staging_schema: "default_silver_acumatica"
+    bronze_schema: "acumatica_bronze"
+    silver_schema: "acumatica_silver"
+    raw_schema: "acumatica_bronze"      # Alias for compatibility
+    staging_schema: "acumatica_silver"  # Alias for compatibility
 
 dbt:
   project_dir: "/opt/airflow/dbt"
@@ -123,3 +177,14 @@ dbt:
     fail_fast: false
     full_refresh: false
     threads: 4
+    
+# Data quality settings
+data_quality:
+  enabled: true
+  checks:
+    - type: "row_count"
+      threshold_min: 0
+    - type: "freshness"
+      max_age_hours: 24
+    - type: "null_check"
+      critical_columns: ["id", "LastModifiedDateTime"]
