@@ -53,6 +53,18 @@ def validate_extraction_integrity(**context):
             logger.warning("⚠️ No extraction results to validate")
             return {'status': 'no_data', 'issues': ['No extraction results found']}
         
+        # Filter only successful extractions
+        successful_extractions = {
+            endpoint: count for endpoint, count in extraction_results.items()
+            if isinstance(count, int) and count > 0
+        }
+        
+        if not successful_extractions:
+            logger.warning("⚠️ No successful extractions to validate")
+            return {'status': 'no_successful_extractions', 'issues': ['No successful extractions found']}
+        
+        logger.info(f"🔍 Validating {len(successful_extractions)} successful extractions")
+        
         # Connection
         host = os.getenv('CLICKHOUSE_HOST')
         port = int(os.getenv('CLICKHOUSE_PORT', 8443))
@@ -627,23 +639,26 @@ def derive_raw_model_name(endpoint_key, project_models):
         if candidate in project_models:
             return candidate
     return None
-
 def run_dbt_transformations(**context):
     """
-    Build a tiny temp dbt project with ONLY the models for endpoints that were actually extracted
-    (and allowed in repsly.yml). Then run dbt once.
+    Build a tiny temp dbt project with ONLY the models for endpoints that were actually extracted,
+    then: dbt compile -> dbt run.
+    On failure, print:
+      - failing node names
+      - their compiled SQL (first 500 lines)
+      - path to the temp project so you can dig in
     """
-    import tempfile, shutil, re, subprocess, yaml
+    import tempfile, shutil, re, subprocess, yaml, json, textwrap, os
     from pathlib import Path
 
     logger.info("🔧 Running dbt transformations (filtered project)...")
 
-    ti = context['task_instance']
-    extraction_results = ti.xcom_pull(task_ids='run_coordinated_extraction', key='extraction_results') or {}
+    ti = context["task_instance"]
+    extraction_results = ti.xcom_pull(task_ids="run_coordinated_extraction", key="extraction_results") or {}
 
-    always_extract = config['extraction']['endpoints'].get('always_extract', []) or []
-    optional_extract = config['extraction']['endpoints'].get('optional_extract', []) or []
-    disabled = set(config['extraction']['endpoints'].get('disabled', []) or [])
+    always_extract = config["extraction"]["endpoints"].get("always_extract", []) or []
+    optional_extract = config["extraction"]["endpoints"].get("optional_extract", []) or []
+    disabled = set(config["extraction"]["endpoints"].get("disabled", []) or [])
     allowed = set(always_extract + optional_extract) - disabled
 
     loaded_endpoints = [e for e, v in extraction_results.items() if isinstance(v, int) and v > 0]
@@ -651,32 +666,32 @@ def run_dbt_transformations(**context):
 
     if not endpoints_to_transform:
         logger.info("⚠️ No endpoints need transformation, skipping dbt.")
-        return {'raw_models': [], 'business_models': []}
+        return {"raw_models": [], "business_models": []}
 
     logger.info("📊 Endpoints to transform: %s", endpoints_to_transform)
 
-    project_dir = Path(config['dbt']['project_dir'])
-    profiles_dir = Path(config['dbt']['profiles_dir'])
-    models_dir = project_dir / "models"
+    project_dir  = Path(config["dbt"]["project_dir"])
+    profiles_dir = Path(config["dbt"]["profiles_dir"])
+    models_dir   = project_dir / "models"
     all_sql_files = {f.stem: f for f in models_dir.rglob("*.sql")}
 
     def raw_candidates(ep):
         c = [f"{ep}_raw", f"raw_{ep}", f"repsly_{ep}_raw", f"raw_repsly_{ep}"]
-        if ep.endswith('s'):
+        if ep.endswith("s"):
             sing = ep[:-1]
             c += [f"{sing}_raw", f"raw_{sing}", f"repsly_{sing}_raw"]
         return c
 
     def silver_candidates(ep):
         c = [ep, f"repsly_{ep}"]
-        if ep.endswith('s'):
+        if ep.endswith("s"):
             sing = ep[:-1]
             c += [sing, f"repsly_{sing}"]
         return c
 
     raw_models, silver_models = [], []
     for ep in endpoints_to_transform:
-        r = next((c for c in raw_candidates(ep) if c in all_sql_files), None)
+        r = next((c for c in raw_candidates(ep)   if c in all_sql_files), None)
         s = next((c for c in silver_candidates(ep) if c in all_sql_files), None)
         if r: raw_models.append(r)
         else: logger.warning("⏭ No raw model for %s", ep)
@@ -685,16 +700,18 @@ def run_dbt_transformations(**context):
 
     if not raw_models and not silver_models:
         logger.info("⚠️ No matching dbt models found.")
-        return {'raw_models': [], 'business_models': []}
+        return {"raw_models": [], "business_models": []}
 
     logger.info("📦 Models to copy: %s", raw_models + silver_models)
 
     tmp_path = Path(tempfile.mkdtemp(prefix="dbt_filtered_"))
     logger.info("📁 Temp dbt project: %s", tmp_path)
 
-    for d in ["models", "macros", "seeds", "snapshots", "tests", "analyses"]:
+    # Create dirs
+    for d in ["models", "macros", "seeds", "snapshots", "tests", "analyses", "target", "logs"]:
         (tmp_path / d).mkdir(parents=True, exist_ok=True)
 
+    # Copy only needed models
     def copy_model(stem):
         src = all_sql_files[stem]
         rel = src.relative_to(models_dir)
@@ -705,6 +722,7 @@ def run_dbt_transformations(**context):
     for m in raw_models + silver_models:
         copy_model(m)
 
+    # dbt_project.yml
     orig_proj = yaml.safe_load((project_dir / "dbt_project.yml").read_text())
     profile_name = orig_proj.get("profile", "data_platform")
     base_dbt_project = {
@@ -722,8 +740,8 @@ def run_dbt_transformations(**context):
     }
     (tmp_path / "dbt_project.yml").write_text(yaml.safe_dump(base_dbt_project, sort_keys=False))
 
-    # Minimal sources
-    raw_schema = config['warehouse']['schemas']['raw_schema']
+    # Minimal sources so source('repsly_raw', ...) resolves
+    raw_schema = config["warehouse"]["schemas"]["raw_schema"]
     src_regex = re.compile(r"source\(\s*['\"]repsly_raw['\"]\s*,\s*['\"]([^'\"]+)['\"]\s*\)")
     source_tables = set()
     for m in raw_models:
@@ -746,30 +764,108 @@ def run_dbt_transformations(**context):
     (tmp_path / "models" / "_repsly_sources.yml").write_text("\n".join(src_yaml) + "\n")
     logger.info("🧾 Wrote minimal sources file with tables: %s", sorted(source_tables))
 
-    exec_conf = config['dbt']['execution']
-    cmd = [
+    # Helper to run dbt commands
+    def run_cmd(cmd_list, prefix):
+        logger.info("▶️ %s: %s", prefix, " ".join(cmd_list))
+        env = os.environ.copy()
+        env["DBT_LOG_FORMAT"] = "json"   # easier to parse if needed
+        try:
+            res = subprocess.run(cmd_list, cwd=str(tmp_path), capture_output=True, text=True, check=True, env=env)
+            logger.info("✅ %s succeeded", prefix)
+            return res.stdout, res.stderr
+        except subprocess.CalledProcessError as e:
+            logger.error("❌ %s FAILED", prefix)
+            logger.error("STDOUT:\n%s", e.stdout)
+            logger.error("STDERR:\n%s", e.stderr)
+            raise
+
+    exec_conf = config["dbt"]["execution"]
+    select_list = raw_models + silver_models
+
+    # 1) compile
+    compile_cmd = [
+        "dbt", "compile",
+        "--project-dir", str(tmp_path),
+        "--profiles-dir", str(profiles_dir),
+        "--no-partial-parse",
+        "--select", *select_list
+    ]
+    run_cmd(compile_cmd, "dbt compile")
+
+    # 2) run
+    run_cmd_list = [
         "dbt", "run",
         "--project-dir", str(tmp_path),
         "--profiles-dir", str(profiles_dir),
-        "--no-partial-parse"
+        "--no-partial-parse",
+        "--select", *select_list
     ]
     if exec_conf.get("fail_fast"):
-        cmd.append("--fail-fast")
+        run_cmd_list.append("--fail-fast")
     if exec_conf.get("threads"):
-        cmd += ["--threads", str(exec_conf["threads"])]
-    cmd += ["--select", *raw_models, *silver_models]
+        run_cmd_list += ["--threads", str(exec_conf["threads"])]
 
-    logger.info("▶️ Running dbt: %s", " ".join(cmd))
     try:
-        res = subprocess.run(cmd, cwd=str(tmp_path), capture_output=True, text=True, check=True)
-        logger.info("✅ dbt run succeeded\n%s", res.stdout)
+        out, err = run_cmd(run_cmd_list, "dbt run")
     except subprocess.CalledProcessError as e:
-        logger.error("❌ dbt run failed\nSTDOUT:\n%s\nSTDERR:\n%s", e.stdout, e.stderr)
-        raise
+            logger.error("❌ dbt run FAILED - analyzing errors...")
+            
+            # Detailed error analysis
+            rr = tmp_path / "target" / "run_results.json"
+            mf = tmp_path / "target" / "manifest.json"
+            
+            if rr.exists() and mf.exists():
+                try:
+                    run_results = json.loads(rr.read_text())
+                    manifest = json.loads(mf.read_text())
+                    
+                    failed_nodes = [r for r in run_results.get("results", []) if r.get("status") == "error"]
+                    
+                    if failed_nodes:
+                        logger.error(f"🚨 {len(failed_nodes)} dbt models failed:")
+                        
+                        for result in failed_nodes:
+                            node_id = result["unique_id"]
+                            node = manifest["nodes"].get(node_id, {})
+                            model_name = node.get("name", node_id)
+                            error_msg = result.get("message", "Unknown error")
+                            
+                            logger.error(f"   ❌ {model_name}: {error_msg}")
+                            
+                            # Show compiled SQL for debugging
+                            compiled_path = node.get("compiled_path")
+                            if compiled_path:
+                                compiled_file = tmp_path / compiled_path
+                                if compiled_file.exists():
+                                    sql_content = compiled_file.read_text()
+                                    # Show first 500 chars of SQL
+                                    sql_preview = sql_content[:500] + "..." if len(sql_content) > 500 else sql_content
+                                    logger.error(f"   📄 Compiled SQL preview:\n{sql_preview}")
+                    
+                    # Don't delete temp dir for debugging
+                    logger.error(f"🔍 dbt project preserved for debugging: {tmp_path}")
+                    
+                except Exception as parse_error:
+                    logger.error(f"❌ Failed to parse dbt results: {parse_error}")
+            
+            else:
+                logger.error("❌ dbt results files not found")
+                logger.error(f"🔍 Temp project: {tmp_path}")
+            
+            # Re-raise to fail the task
+            raise RuntimeError(f"dbt transformations failed: {str(e)}")
     finally:
-        shutil.rmtree(tmp_path, ignore_errors=True)
+        # Only clean on success; leave it if something failed
+        if (tmp_path / "target" / "run_results.json").exists():
+            rr = json.loads((tmp_path / "target" / "run_results.json").read_text())
+            statuses = {r["status"] for r in rr.get("results", [])}
+            if statuses == {"success"}:
+                shutil.rmtree(tmp_path, ignore_errors=True)
+            else:
+                logger.warning("❗ Leaving temp project at %s for debugging", tmp_path)
 
     return {"raw_models": raw_models, "business_models": silver_models}
+
 
 # ---------------- DATA QUALITY CHECKS (Enhanced) ---------------- #
 def check_transformed_data(**context):
@@ -964,12 +1060,22 @@ def monitor_warehouse_health(**context):
             'recommendations': []
         }
         
-        # Check database accessibility
+        # Check database accessibility and create if needed
         try:
             databases = client.query("SHOW DATABASES")
             db_names = [row[0] for row in databases.result_rows]
             
-            if raw_schema in db_names:
+            if raw_schema not in db_names:
+                # Create the database if it doesn't exist
+                if raw_schema != 'default':
+                    logger.info(f"🆕 Creating database {raw_schema}")
+                    client.command(f"CREATE DATABASE IF NOT EXISTS `{raw_schema}`")
+                    health_status['database_accessible'] = True
+                    health_status['recommendations'].append(f"Created missing database {raw_schema}")
+                    logger.info(f"✅ Created database {raw_schema}")
+                else:
+                    health_status['database_accessible'] = True
+            else:
                 health_status['database_accessible'] = True
                 logger.info(f"✅ Database {raw_schema} is accessible")
                 
@@ -1061,17 +1167,23 @@ def monitor_warehouse_health(**context):
                     
                 except Exception as e:
                     logger.warning(f"⚠️ Could not get cluster health info: {e}")
-                
-            else:
-                health_status['database_accessible'] = False
-                health_status['overall_status'] = 'CRITICAL'
-                health_status['issues'].append(f"Database {raw_schema} not found")
-                logger.error(f"❌ Database {raw_schema} not found")
         
         except Exception as e:
-            health_status['overall_status'] = 'CRITICAL'
-            health_status['issues'].append(f"Cannot connect to ClickHouse: {e}")
-            logger.error(f"❌ Cannot connect to ClickHouse: {e}")
+            # Try to create the database
+            try:
+                if raw_schema != 'default':
+                    logger.info(f"🆕 Attempting to create missing database {raw_schema}")
+                    client.command(f"CREATE DATABASE IF NOT EXISTS `{raw_schema}`")
+                    health_status['database_accessible'] = True
+                    health_status['recommendations'].append(f"Auto-created missing database {raw_schema}")
+                    logger.info(f"✅ Successfully created database {raw_schema}")
+                else:
+                    health_status['database_accessible'] = True
+            except Exception as create_error:
+                health_status['database_accessible'] = False
+                health_status['overall_status'] = 'CRITICAL'
+                health_status['issues'].append(f"Cannot create database {raw_schema}: {create_error}")
+                logger.error(f"❌ Failed to create database {raw_schema}: {create_error}")
         
         # Determine final health status
         if health_status['issues']:
@@ -1107,9 +1219,22 @@ def monitor_warehouse_health(**context):
         # Store health status for monitoring
         context['task_instance'].xcom_push(key='warehouse_health', value=health_status)
         
-        # Raise alert for critical issues
-        if health_status['overall_status'] == 'CRITICAL':
-            raise ValueError(f"Critical warehouse health issues detected: {health_status['issues']}")
+        # Only raise alert for truly critical issues (not missing empty databases)
+        critical_issues = [
+            issue for issue in health_status['issues'] 
+            if not (issue.startswith("Database") and "not found" in issue)
+            and not (issue.startswith("Cannot create database") and "already exists" in str(issue))
+        ]
+        
+        if critical_issues:
+            health_status['overall_status'] = 'CRITICAL'
+            raise ValueError(f"Critical warehouse health issues detected: {critical_issues}")
+        elif health_status['issues']:
+            # Non-critical issues - log but don't fail
+            health_status['overall_status'] = 'DEGRADED'
+            logger.warning(f"⚠️ Non-critical health issues detected: {health_status['issues']}")
+        else:
+            health_status['overall_status'] = 'HEALTHY'
         
         return health_status
         

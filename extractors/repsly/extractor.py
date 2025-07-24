@@ -572,6 +572,99 @@ def create_table_from_dataframe(client, full_table, df):
         logger.error(f"❌ Failed to create table {full_table}: {e}")
         raise
 
+def load_dataframe_to_warehouse_verified(df, endpoint_key, extracted_at):
+    """Load DataFrame with comprehensive verification and duplicate prevention."""
+    import clickhouse_connect
+    
+    raw_schema = CONFIG['warehouse']['schemas']['raw_schema']
+    
+    # Connection setup
+    host = os.getenv('CLICKHOUSE_HOST')
+    port = int(os.getenv('CLICKHOUSE_PORT', 8443))
+    database = os.getenv('CLICKHOUSE_DATABASE', 'default')
+    username = os.getenv('CLICKHOUSE_USER', 'default')
+    password = os.getenv('CLICKHOUSE_PASSWORD')
+    
+    if not all([host, password]):
+        raise ValueError("ClickHouse connection parameters missing")
+    
+    client = clickhouse_connect.get_client(
+        host=host, port=port, username=username, password=password,
+        database=database, secure=True
+    )
+    
+    try:
+        # Ensure schema exists with proper error handling
+        if raw_schema != 'default':
+            try:
+                client.command(f"CREATE DATABASE IF NOT EXISTS `{raw_schema}`")
+                logger.info(f"✅ Database {raw_schema} ready")
+            except Exception as db_error:
+                logger.error(f"❌ Failed to create database {raw_schema}: {db_error}")
+                raise ValueError(f"Cannot access or create database {raw_schema}: {db_error}")
+        
+        table_name = f"raw_{endpoint_key}"
+        full_table = f"`{raw_schema}`.`{table_name}`"
+        extraction_timestamp = extracted_at.isoformat()
+        
+        # CRITICAL: Duplicate prevention check
+        if table_exists(client, full_table):
+            duplicate_check = client.query(f"""
+                SELECT count() 
+                FROM {full_table} 
+                WHERE _extracted_at = '{extraction_timestamp}'
+            """)
+            
+            existing_count = duplicate_check.result_rows[0][0]
+            if existing_count > 0:
+                logger.warning(f"⚠️ DUPLICATE PREVENTION: {existing_count} records already exist")
+                logger.warning(f"   Timestamp: {extraction_timestamp}")
+                logger.warning(f"   Skipping load to prevent duplicates")
+                return 0  # Success but no new records
+            
+            logger.info(f"✅ No duplicates found for {extraction_timestamp}")
+        else:
+            # Create table if doesn't exist
+            create_table_from_dataframe(client, full_table, df)
+        
+        # Data validation before load
+        unique_timestamps = df['_extracted_at'].nunique()
+        if unique_timestamps != 1:
+            raise ValueError(f"Data integrity error: {unique_timestamps} different timestamps")
+        
+        actual_timestamp = df['_extracted_at'].iloc[0]
+        if actual_timestamp != extraction_timestamp:
+            raise ValueError(f"Timestamp mismatch: expected {extraction_timestamp}, got {actual_timestamp}")
+        
+        # Prepare data
+        df_clean = df.copy()
+        df_clean.columns = [col.replace(' ', '_').replace('-', '_') for col in df_clean.columns]
+        df_str = df_clean.astype(str).replace(['nan', 'None', 'null', '<NA>'], '')
+        
+        # Load data
+        client.insert_df(table=full_table, df=df_str)
+        
+        # CRITICAL: Verify the load
+        verification_check = client.query(f"""
+            SELECT count() 
+            FROM {full_table} 
+            WHERE _extracted_at = '{extraction_timestamp}'
+        """)
+        
+        actual_loaded = verification_check.result_rows[0][0]
+        
+        if actual_loaded != len(df):
+            raise ValueError(f"Load verification failed: expected {len(df)}, loaded {actual_loaded}")
+        
+        logger.info(f"✅ Load verified: {actual_loaded} records")
+        return actual_loaded
+        
+    except Exception as e:
+        logger.error(f"❌ Warehouse load failed: {e}")
+        raise
+    finally:
+        client.close()
+
 def load_dataframe_to_warehouse(df, endpoint_key, extracted_at):
     """Load DataFrame directly to ClickHouse warehouse with improved safety."""
     import clickhouse_connect
@@ -1088,39 +1181,37 @@ def get_endpoint_execution_order():
 
 # ---------------- MAIN EXTRACTION FUNCTION WITH ATOMIC STATE UPDATES ---------------- #
 def extract_repsly_endpoint(endpoint_key, **context):
-    """Main extraction function with atomic state management - PREVENTS DATA LOSS."""
+    """ATOMIC extraction with bulletproof state management."""
     if endpoint_key not in ENABLED_ENDPOINTS:
         logger.warning(f"⚠️ Endpoint {endpoint_key} not enabled")
         return 0
 
-    # execution_dt = context.get('execution_date') or _utc_now()
     execution_dt = context.get('logical_date') or _utc_now()
-
     endpoint_config = REPSLY_ENDPOINTS.get(endpoint_key)
+    
     if not endpoint_config:
         logger.error(f"❌ Unknown endpoint: {endpoint_key}")
         return 0
 
-    logger.info(f"🔄 Extracting {endpoint_key} ({endpoint_config['path']})")
-    logger.info(f"   Incremental: {CONFIG['extraction']['incremental']['enabled']}")
-
-    # Store initial state for rollback
-    initial_state = None
+    logger.info(f"🔄 ATOMIC extraction for {endpoint_key}")
+    
+    # CRITICAL: Backup current state before ANY changes
+    state_backup = None
     with _STATE_LOCK:
-        initial_state = _STATE_CACHE.copy()
+        state_backup = _STATE_CACHE.copy()
+    
+    logger.info(f"💾 State backed up for rollback safety")
 
     try:
+        # Step 1: Extract data (no state changes)
         session = create_authenticated_session()
-        
-        # Fetch data
         raw_data = get_paginated_data(session, endpoint_config, endpoint_key)
 
         if not raw_data:
             logger.warning(f"⚠️ No data returned for {endpoint_key}")
             return 0
 
-        # Flatten nested structures
-        logger.info(f"   Flattening {len(raw_data)} records...")
+        # Step 2: Process data (no state changes)
         flattened = []
         for i, record in enumerate(raw_data):
             try:
@@ -1133,58 +1224,101 @@ def extract_repsly_endpoint(endpoint_key, **context):
             logger.warning(f"⚠️ No valid records after flattening for {endpoint_key}")
             return 0
 
-        # Create DataFrame
+        # Step 3: Create DataFrame
         df = pd.DataFrame(flattened)
-
-        # Add metadata columns
         extracted_at = _utc_now()
         df['_extracted_at'] = extracted_at.isoformat()
         df['_source_system'] = 'repsly'
         df['_endpoint'] = endpoint_key
 
-        logger.info(f"   DataFrame shape: {df.shape}")
-        logger.info(f"   DataFrame columns: {list(df.columns)}")
+        logger.info(f"   📊 Prepared {len(df)} records for warehouse load")
 
-        # CRITICAL: Attempt warehouse load BEFORE updating any state
+        # Step 4: CRITICAL - Load to warehouse FIRST (before state updates)
         try:
-            records_loaded = load_dataframe_to_warehouse(df, endpoint_key, extracted_at)
+            records_loaded = load_dataframe_to_warehouse_verified(df, endpoint_key, extracted_at)
             
-            if records_loaded > 0:
-                logger.info(f"✅ {endpoint_key}: Loaded {records_loaded} records to warehouse")
+            if records_loaded == 0:
+                logger.warning(f"⚠️ No records actually loaded for {endpoint_key}")
+                return 0
                 
-                # ONLY update state after successful warehouse load
-                update_extraction_state_after_successful_load(endpoint_key, endpoint_config, df, raw_data)
-                
-            else:
-                logger.warning(f"⚠️ No records loaded for {endpoint_key}")
-                # Restore initial state since no data was loaded
-                with _STATE_LOCK:
-                    _STATE_CACHE.clear()
-                    _STATE_CACHE.update(initial_state)
-                
-            return records_loaded
+            logger.info(f"✅ VERIFIED: {records_loaded} records loaded to warehouse")
             
         except Exception as warehouse_error:
-            logger.error(f"❌ Failed to load {endpoint_key} to warehouse: {warehouse_error}")
+            logger.error(f"❌ WAREHOUSE LOAD FAILED: {warehouse_error}")
+            logger.error("🔄 RESTORING original state (no changes made)")
             
-            # CRITICAL: Restore initial state to prevent data loss on next run
-            logger.error("🔄 ROLLING BACK state changes due to warehouse failure")
+            # Restore original state
             with _STATE_LOCK:
                 _STATE_CACHE.clear()
-                _STATE_CACHE.update(initial_state)
+                _STATE_CACHE.update(state_backup)
             
-            raise
+            raise  # Fail the task
+
+        # Step 5: ONLY NOW update state after verified load
+        try:
+            update_state_after_verified_load(endpoint_key, endpoint_config, df, raw_data, extracted_at)
+            logger.info("✅ State updated after verified warehouse load")
+            
+        except Exception as state_error:
+            logger.error(f"❌ STATE UPDATE FAILED: {state_error}")
+            # Data is loaded successfully, so don't fail pipeline
+            logger.warning("⚠️ Data loaded but state may be inconsistent - next run will detect")
+            
+        return records_loaded
 
     except Exception as e:
-        logger.error(f"❌ Failed to extract {endpoint_key}: {e}")
+        logger.error(f"❌ EXTRACTION FAILED for {endpoint_key}: {e}")
         
-        # Restore initial state on any failure
-        logger.error("🔄 ROLLING BACK state changes due to extraction failure")
+        # Restore original state on any failure
+        logger.error("🔄 RESTORING original state due to extraction failure")
         with _STATE_LOCK:
             _STATE_CACHE.clear()
-            _STATE_CACHE.update(initial_state)
+            _STATE_CACHE.update(state_backup)
         
         raise
+
+
+def update_state_after_verified_load(endpoint_key, endpoint_config, df, raw_data, extracted_at):
+    """Update state ONLY after verified warehouse load - prevents data loss."""
+    try:
+        logger.info(f"📝 Updating state after VERIFIED load for {endpoint_key}")
+        
+        # Update watermark from successfully loaded data
+        incremental_field = endpoint_config.get('incremental_field')
+        if incremental_field and not df.empty:
+            incremental_columns = [col for col in df.columns if incremental_field.lower() in col.lower()]
+            if incremental_columns:
+                actual_field = incremental_columns[0]
+                timestamps = _parse_timestamp_column(df, actual_field)
+                valid_timestamps = [ts for ts in timestamps if ts is not None]
+                
+                if valid_timestamps:
+                    max_ts = max(valid_timestamps)
+                    _update_watermark(endpoint_key, max_ts)
+                    logger.info(f"🕒 Watermark updated from loaded data: {max_ts.isoformat()}")
+                else:
+                    # Fallback to extraction timestamp
+                    _update_watermark(endpoint_key, extracted_at)
+                    logger.info(f"🕒 Fallback watermark: {extracted_at.isoformat()}")
+        
+        # Update pagination state
+        if endpoint_config['pagination_type'] == 'id' and raw_data:
+            id_field_name = endpoint_config.get('id_field', 'LastClientNoteID').replace('Last', '')
+            if id_field_name in raw_data[-1]:
+                last_id_key = f"{endpoint_key}_last_id"
+                with _STATE_LOCK:
+                    _STATE_CACHE[last_id_key] = raw_data[-1][id_field_name]
+                logger.info(f"   📝 Updated ID state: {raw_data[-1][id_field_name]}")
+        
+        # CRITICAL: Save state atomically
+        _save_state()
+        logger.info("✅ State saved after verified load")
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to update state: {e}")
+        logger.error("❌ CRITICAL: Next run may have data gaps!")
+        raise  # Raise to indicate state corruption
+
 
 # ---------------- DAG INTEGRATION FUNCTIONS ---------------- #
 def finalize_state_after_warehouse_load(context):

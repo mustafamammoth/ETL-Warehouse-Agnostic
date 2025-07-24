@@ -65,10 +65,10 @@ extraction:
     
     # Optional endpoints (can be enabled when needed)
     optional_extract:
-      - "daily_working_time"
-      # - "visits"
-      # - "representatives"  
-      # - "users"
+      # - "daily_working_time"
+      - "visits"
+      - "representatives"  
+      - "users"
       # - "products"
       # - "retail_audits"
       # - "purchase_orders"
