@@ -685,31 +685,18 @@ def run_dbt_transformations(**context):
         return c
 
     def silver_candidates(ep):
-        """Silver model candidates with explicit mapping for special cases."""
-        
-        # EXPLICIT MAPPINGS for endpoints that have multiple silver models
-        explicit_mappings = {
-            'forms': ['forms_items', 'forms_staging', 'forms_business', 'forms'],  # Prefer items over staging
-            'visits': ['visits', 'visits_business', 'visit', 'visits_staging'],
-            'clients': ['clients', 'clients_business', 'client', 'clients_staging'],
-            # Add more explicit mappings as needed
-        }
-        
-        # If we have an explicit mapping, use it
-        if ep in explicit_mappings:
-            return explicit_mappings[ep]
-        
-        # Otherwise, use the general logic
+        """Silver model candidates with _items prioritized over _staging."""
         candidates = []
         
-        # Basic patterns
+        # Basic patterns first
         candidates.extend([ep, f"repsly_{ep}"])
         
         if ep.endswith("s"):
-            singular = ep[:-1]
+            singular = ep[:-1]  # "forms" -> "form"
             candidates.extend([singular, f"repsly_{singular}"])
             
-            # Items/details patterns FIRST (prioritized)
+            # PRIORITIZE ITEMS OVER STAGING
+            # Items/details patterns FIRST
             candidates.extend([
                 f"{ep}_items",        # forms_items (PRIORITIZED)
                 f"{singular}_items",  # form_items
@@ -719,7 +706,7 @@ def run_dbt_transformations(**context):
             
             # Staging patterns AFTER items
             candidates.extend([
-                f"{ep}_staging",      # forms_staging
+                f"{ep}_staging",      # forms_staging (comes after _items)
                 f"{singular}_staging" # form_staging
             ])
             
@@ -729,9 +716,11 @@ def run_dbt_transformations(**context):
                 f"{singular}_business"
             ])
         else:
+            # If endpoint is singular, try plural versions too
             plural = f"{ep}s"
             candidates.extend([
                 plural,
+                f"repsly_{plural}",
                 f"{ep}_items",
                 f"{plural}_items",
                 f"{ep}_staging",
@@ -742,20 +731,71 @@ def run_dbt_transformations(**context):
         
         return candidates
 
+    # Find all models and their dependencies
+    def find_model_dependencies(model_name, all_sql_files, visited=None):
+        """Find all dependencies for a model by parsing its SQL."""
+        if visited is None:
+            visited = set()
+        
+        if model_name in visited or model_name not in all_sql_files:
+            return set()
+        
+        visited.add(model_name)
+        dependencies = set()
+        
+        try:
+            sql_content = all_sql_files[model_name].read_text()
+            
+            # Find ref() calls - matches ref('model_name') or ref("model_name")
+            ref_pattern = re.compile(r"ref\(\s*['\"]([^'\"]+)['\"]\s*\)")
+            refs = ref_pattern.findall(sql_content)
+            
+            for ref_model in refs:
+                if ref_model in all_sql_files:
+                    dependencies.add(ref_model)
+                    # Recursively find dependencies of dependencies
+                    dependencies.update(find_model_dependencies(ref_model, all_sql_files, visited.copy()))
+            
+        except Exception as e:
+            logger.warning(f"⚠️ Could not parse dependencies for {model_name}: {e}")
+        
+        return dependencies
+
     raw_models, silver_models = [], []
+    all_needed_models = set()
+    
     for ep in endpoints_to_transform:
-        r = next((c for c in raw_candidates(ep)   if c in all_sql_files), None)
+        # Find raw model
+        r = next((c for c in raw_candidates(ep) if c in all_sql_files), None)
+        if r: 
+            raw_models.append(r)
+            all_needed_models.add(r)
+        else: 
+            logger.warning("⏭ No raw model for %s", ep)
+        
+        # Find silver model
         s = next((c for c in silver_candidates(ep) if c in all_sql_files), None)
-        if r: raw_models.append(r)
-        else: logger.warning("⏭ No raw model for %s", ep)
-        if s: silver_models.append(s)
-        else: logger.warning("⏭ No silver model for %s", ep)
+        if s: 
+            silver_models.append(s)
+            all_needed_models.add(s)
+            
+            # Find all dependencies for this silver model
+            deps = find_model_dependencies(s, all_sql_files)
+            if deps:
+                logger.info(f"📋 {s} depends on: {sorted(deps)}")
+                all_needed_models.update(deps)
+                # Add dependencies to silver_models if they're not raw models
+                for dep in deps:
+                    if dep not in raw_models and dep not in silver_models:
+                        silver_models.append(dep)
+        else: 
+            logger.warning("⏭ No silver model for %s", ep)
 
     if not raw_models and not silver_models:
         logger.info("⚠️ No matching dbt models found.")
         return {"raw_models": [], "business_models": []}
 
-    logger.info("📦 Models to copy: %s", raw_models + silver_models)
+    logger.info("📦 Models to copy: %s", sorted(all_needed_models))
 
     tmp_path = Path(tempfile.mkdtemp(prefix="dbt_filtered_"))
     logger.info("📁 Temp dbt project: %s", tmp_path)
@@ -772,7 +812,7 @@ def run_dbt_transformations(**context):
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dest)
 
-    for m in raw_models + silver_models:
+    for m in sorted(all_needed_models):
         copy_model(m)
 
     # dbt_project.yml
@@ -833,7 +873,7 @@ def run_dbt_transformations(**context):
             raise
 
     exec_conf = config["dbt"]["execution"]
-    select_list = raw_models + silver_models
+    select_list = sorted(all_needed_models)
 
     # 1) compile
     compile_cmd = [

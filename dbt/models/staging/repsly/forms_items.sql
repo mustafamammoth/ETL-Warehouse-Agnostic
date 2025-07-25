@@ -1,9 +1,8 @@
--- Form items: Explode JSON into one row per field/value - ClickHouse compatible
 {{ config(
     materialized='table',
     schema=var('silver_schema', 'repsly_silver'),
     engine='MergeTree()',
-    order_by='(form_id, item_ordinal)',
+    order_by='item_ordinal',
     partition_by='toYYYYMM(bronze_processed_at)',
     meta={
         'description': 'Exploded form items - one row per form field/value pair',
@@ -36,6 +35,7 @@ WITH json_exploded AS (
     WHERE items_raw IS NOT NULL 
       AND items_raw != '' 
       AND isValidJSON(items_raw)
+      AND form_id IS NOT NULL
 ),
 
 numbered_items AS (
@@ -69,3 +69,4 @@ SELECT
     
 FROM numbered_items
 WHERE field IS NOT NULL AND field != ''
+  AND form_id IS NOT NULL
