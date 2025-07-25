@@ -1,84 +1,77 @@
--- Raw daily working time data from Repsly API with incremental support
 {{ config(
     materialized='incremental',
-    schema=var('raw_schema', 'repsly_bronze'),
-    unique_key='daily_working_time_id',
     incremental_strategy='append',
     on_schema_change='append_new_columns',
-    engine='MergeTree()',
-    order_by='(dbt_extracted_at, daily_working_time_id)'
+    meta={
+        'description': 'Raw daily working time data from Repsly API - append-only, all fields as strings',
+        'data_source': 'repsly_api',
+        'update_frequency': 'incremental'
+    }
 ) }}
 
-WITH source_data AS (
-    SELECT 
-        -- Primary identifier
-        "DailyWorkingTimeID"                                  AS daily_working_time_id,
-        
-        -- Date and time fields (Microsoft JSON format)
-        "Date"                                                AS date_raw,
-        "DateAndTimeStart"                                    AS date_and_time_start_raw,
-        "DateAndTimeEnd"                                      AS date_and_time_end_raw,
-        
-        -- Duration and metrics
-        "Length"                                              AS length_raw,
-        
-        -- Mileage information
-        "MileageStart"                                        AS mileage_start_raw,
-        "MileageEnd"                                          AS mileage_end_raw,
-        "MileageTotal"                                        AS mileage_total_raw,
-        
-        -- GPS coordinates (start location)
-        "LatitudeStart"                                       AS latitude_start_raw,
-        "LongitudeStart"                                      AS longitude_start_raw,
-        
-        -- GPS coordinates (end location)
-        "LatitudeEnd"                                         AS latitude_end_raw,
-        "LongitudeEnd"                                        AS longitude_end_raw,
-        
-        -- Representative information
-        "RepresentativeCode"                                  AS representative_code,
-        "RepresentativeName"                                  AS representative_name,
-        
-        -- Notes and categorization
-        "Note"                                                AS note,
-        "Tag"                                                 AS tag,
-        
-        -- Visit metrics
-        "NoOfVisits"                                          AS no_of_visits_raw,
-        "MinOfVisits"                                         AS min_of_visits_raw,
-        "MaxOfVisits"                                         AS max_of_visits_raw,
-        "MinMaxVisitsTime"                                    AS min_max_visits_time_raw,
-        
-        -- Time breakdown
-        "TimeAtClient"                                        AS time_at_client_raw,
-        "TimeInTravel"                                        AS time_in_travel_raw,
-        "TimeInPause"                                         AS time_in_pause_raw,
-        
-        -- Metadata fields (preserve all)
-        "_extracted_at"                                       AS extracted_at,
-        "_source_system"                                      AS source_system,
-        "_endpoint"                                           AS endpoint,
-        
-        -- Incremental tracking fields - ClickHouse compatible
-        parseDateTimeBestEffort("_extracted_at")              AS dbt_extracted_at,
-        now()                                                 AS dbt_updated_at,
-        
-        -- Data quality indicators
-        CASE WHEN "Date"               IS NOT NULL AND "Date"               != '' THEN 1 ELSE 0 END AS has_date,
-        CASE WHEN "RepresentativeCode" IS NOT NULL AND "RepresentativeCode" != '' THEN 1 ELSE 0 END AS has_representative,
-        CASE WHEN "Length"             IS NOT NULL AND "Length"             != '' AND "Length" != '0' THEN 1 ELSE 0 END AS has_duration
+-- Bronze layer: Pure append-only storage
+-- All fields stored as strings to avoid type conflicts
+SELECT 
+    CAST(COALESCE("DailyWorkingTimeID", '') AS String) AS daily_working_time_id,
+    
+    -- Date and time fields (Microsoft JSON format)
+    CAST(COALESCE("Date", '') AS String) AS date_raw,
+    CAST(COALESCE("DateAndTimeStart", '') AS String) AS date_and_time_start_raw,
+    CAST(COALESCE("DateAndTimeEnd", '') AS String) AS date_and_time_end_raw,
+    
+    -- Duration and metrics
+    CAST(COALESCE("Length", '') AS String) AS length_raw,
+    
+    -- Mileage information
+    CAST(COALESCE("MileageStart", '') AS String) AS mileage_start_raw,
+    CAST(COALESCE("MileageEnd", '') AS String) AS mileage_end_raw,
+    CAST(COALESCE("MileageTotal", '') AS String) AS mileage_total_raw,
+    
+    -- GPS coordinates (start location)
+    CAST(COALESCE("LatitudeStart", '') AS String) AS latitude_start_raw,
+    CAST(COALESCE("LongitudeStart", '') AS String) AS longitude_start_raw,
+    
+    -- GPS coordinates (end location)
+    CAST(COALESCE("LatitudeEnd", '') AS String) AS latitude_end_raw,
+    CAST(COALESCE("LongitudeEnd", '') AS String) AS longitude_end_raw,
+    
+    -- Representative information
+    CAST(COALESCE("RepresentativeCode", '') AS String) AS representative_code,
+    CAST(COALESCE("RepresentativeName", '') AS String) AS representative_name,
+    
+    -- Notes and categorization
+    CAST(COALESCE("Note", '') AS String) AS note,
+    CAST(COALESCE("Tag", '') AS String) AS tag,
+    
+    -- Visit metrics (these might not be in all data)
+    CAST(COALESCE("NoOfVisits", '') AS String) AS no_of_visits_raw,
+    CAST(COALESCE("MinOfVisits", '') AS String) AS min_of_visits_raw,
+    CAST(COALESCE("MaxOfVisits", '') AS String) AS max_of_visits_raw,
+    CAST(COALESCE("MinMaxVisitsTime", '') AS String) AS min_max_visits_time_raw,
+    
+    -- Time breakdown (these might not be in all data)
+    CAST(COALESCE("TimeAtClient", '') AS String) AS time_at_client_raw,
+    CAST(COALESCE("TimeInTravel", '') AS String) AS time_in_travel_raw,
+    CAST(COALESCE("TimeInPause", '') AS String) AS time_in_pause_raw,
 
-    FROM {{ source('repsly_raw', 'raw_daily_working_time') }}
-    WHERE "DailyWorkingTimeID" IS NOT NULL
-      AND "DailyWorkingTimeID" != ''
-)
+    -- System metadata
+    CAST("_extracted_at" AS String) AS extracted_at,
+    CAST("_source_system" AS String) AS source_system,
+    CAST("_endpoint" AS String) AS endpoint,
+    now() AS dbt_loaded_at,
+    
+    cityHash64(
+        concat(
+            COALESCE("DailyWorkingTimeID", ''),
+            COALESCE("Date", ''),
+            "_extracted_at"
+        )
+    ) AS record_hash
 
-SELECT *
-FROM source_data
+FROM {{ source('repsly_raw', 'raw_daily_working_time') }}
 
 {% if is_incremental() %}
-WHERE dbt_extracted_at > (
-    SELECT coalesce(max(dbt_extracted_at), toDateTime('1900-01-01 00:00:00'))
-    FROM {{ this }}
-)
+WHERE parseDateTimeBestEffort("_extracted_at") > 
+    (SELECT COALESCE(max(parseDateTimeBestEffort(extracted_at)), toDateTime('1900-01-01'))
+     FROM {{ this }})
 {% endif %}

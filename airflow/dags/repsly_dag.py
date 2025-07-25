@@ -639,6 +639,8 @@ def derive_raw_model_name(endpoint_key, project_models):
         if candidate in project_models:
             return candidate
     return None
+
+
 def run_dbt_transformations(**context):
     """
     Build a tiny temp dbt project with ONLY the models for endpoints that were actually extracted,
@@ -683,11 +685,62 @@ def run_dbt_transformations(**context):
         return c
 
     def silver_candidates(ep):
-        c = [ep, f"repsly_{ep}"]
+        """Silver model candidates with explicit mapping for special cases."""
+        
+        # EXPLICIT MAPPINGS for endpoints that have multiple silver models
+        explicit_mappings = {
+            'forms': ['forms_items', 'forms_staging', 'forms_business', 'forms'],  # Prefer items over staging
+            'visits': ['visits', 'visits_business', 'visit', 'visits_staging'],
+            'clients': ['clients', 'clients_business', 'client', 'clients_staging'],
+            # Add more explicit mappings as needed
+        }
+        
+        # If we have an explicit mapping, use it
+        if ep in explicit_mappings:
+            return explicit_mappings[ep]
+        
+        # Otherwise, use the general logic
+        candidates = []
+        
+        # Basic patterns
+        candidates.extend([ep, f"repsly_{ep}"])
+        
         if ep.endswith("s"):
-            sing = ep[:-1]
-            c += [sing, f"repsly_{sing}"]
-        return c
+            singular = ep[:-1]
+            candidates.extend([singular, f"repsly_{singular}"])
+            
+            # Items/details patterns FIRST (prioritized)
+            candidates.extend([
+                f"{ep}_items",        # forms_items (PRIORITIZED)
+                f"{singular}_items",  # form_items
+                f"{ep}_details",
+                f"{singular}_details"
+            ])
+            
+            # Staging patterns AFTER items
+            candidates.extend([
+                f"{ep}_staging",      # forms_staging
+                f"{singular}_staging" # form_staging
+            ])
+            
+            # Business patterns
+            candidates.extend([
+                f"{ep}_business",     
+                f"{singular}_business"
+            ])
+        else:
+            plural = f"{ep}s"
+            candidates.extend([
+                plural,
+                f"{ep}_items",
+                f"{plural}_items",
+                f"{ep}_staging",
+                f"{plural}_staging",
+                f"{ep}_business",
+                f"{plural}_business"
+            ])
+        
+        return candidates
 
     raw_models, silver_models = [], []
     for ep in endpoints_to_transform:
@@ -865,6 +918,297 @@ def run_dbt_transformations(**context):
                 logger.warning("❗ Leaving temp project at %s for debugging", tmp_path)
 
     return {"raw_models": raw_models, "business_models": silver_models}
+
+
+# def run_dbt_transformations(**context):
+#     """
+#     Build a tiny temp dbt project with ONLY the models for endpoints that were actually extracted,
+#     then: dbt compile -> dbt run.
+#     On failure, print:
+#       - failing node names
+#       - their compiled SQL (first 500 lines)
+#       - path to the temp project so you can dig in
+#     """
+#     import tempfile, shutil, re, subprocess, yaml, json, textwrap, os
+#     from pathlib import Path
+
+#     logger.info("🔧 Running dbt transformations (filtered project)...")
+
+#     ti = context["task_instance"]
+#     extraction_results = ti.xcom_pull(task_ids="run_coordinated_extraction", key="extraction_results") or {}
+
+#     always_extract = config["extraction"]["endpoints"].get("always_extract", []) or []
+#     optional_extract = config["extraction"]["endpoints"].get("optional_extract", []) or []
+#     disabled = set(config["extraction"]["endpoints"].get("disabled", []) or [])
+#     allowed = set(always_extract + optional_extract) - disabled
+
+#     loaded_endpoints = [e for e, v in extraction_results.items() if isinstance(v, int) and v > 0]
+#     endpoints_to_transform = [e for e in loaded_endpoints if e in allowed]
+
+#     if not endpoints_to_transform:
+#         logger.info("⚠️ No endpoints need transformation, skipping dbt.")
+#         return {"raw_models": [], "business_models": []}
+
+#     logger.info("📊 Endpoints to transform: %s", endpoints_to_transform)
+
+#     project_dir  = Path(config["dbt"]["project_dir"])
+#     profiles_dir = Path(config["dbt"]["profiles_dir"])
+#     models_dir   = project_dir / "models"
+#     all_sql_files = {f.stem: f for f in models_dir.rglob("*.sql")}
+
+#     def raw_candidates(ep):
+#         c = [f"{ep}_raw", f"raw_{ep}", f"repsly_{ep}_raw", f"raw_repsly_{ep}"]
+#         if ep.endswith("s"):
+#             sing = ep[:-1]
+#             c += [f"{sing}_raw", f"raw_{sing}", f"repsly_{sing}_raw"]
+#         return c
+
+#     # def silver_candidates(ep):
+#     #     c = [ep, f"repsly_{ep}"]
+#     #     if ep.endswith("s"):
+#     #         sing = ep[:-1]
+#     #         c += [sing, f"repsly_{sing}"]
+#     #     return c
+
+#     def silver_candidates(ep):
+#         """Enhanced silver model candidate generation with better pattern matching."""
+#         candidates = []
+        
+#         # Basic patterns - direct match and prefixed
+#         candidates.extend([ep, f"repsly_{ep}"])
+        
+#         # Handle singular/plural variations
+#         if ep.endswith("s"):
+#             singular = ep[:-1]  # "forms" -> "form"
+#             candidates.extend([singular, f"repsly_{singular}"])
+            
+#             # Staging patterns (both singular and plural)
+#             candidates.extend([
+#                 f"{ep}_staging",      # forms_staging
+#                 f"{singular}_staging" # form_staging
+#             ])
+            
+#             # Items/details patterns (both singular and plural)
+#             candidates.extend([
+#                 f"{ep}_items",        # forms_items ✓ THIS WAS MISSING!
+#                 f"{singular}_items",  # form_items
+#                 f"{ep}_details",      # forms_details
+#                 f"{singular}_details" # form_details
+#             ])
+            
+#             # Business patterns
+#             candidates.extend([
+#                 f"{ep}_business",     # forms_business
+#                 f"{singular}_business" # form_business
+#             ])
+            
+#             # Additional patterns for complex endpoints
+#             candidates.extend([
+#                 f"{ep}_processed",    # forms_processed
+#                 f"{singular}_processed", # form_processed
+#                 f"{ep}_cleaned",      # forms_cleaned
+#                 f"{singular}_cleaned" # form_cleaned
+#             ])
+#         else:
+#             # If endpoint is singular, try plural versions too
+#             plural = f"{ep}s"
+#             candidates.extend([
+#                 plural,
+#                 f"repsly_{plural}",
+#                 f"{ep}_staging",
+#                 f"{plural}_staging",
+#                 f"{ep}_items",
+#                 f"{plural}_items",
+#                 f"{ep}_business",
+#                 f"{plural}_business"
+#             ])
+        
+#         # Remove duplicates while preserving order
+#         seen = set()
+#         unique_candidates = []
+#         for candidate in candidates:
+#             if candidate not in seen:
+#                 seen.add(candidate)
+#                 unique_candidates.append(candidate)
+        
+#         return unique_candidates
+
+#     raw_models, silver_models = [], []
+#     for ep in endpoints_to_transform:
+#         r = next((c for c in raw_candidates(ep)   if c in all_sql_files), None)
+#         s = next((c for c in silver_candidates(ep) if c in all_sql_files), None)
+#         if r: raw_models.append(r)
+#         else: logger.warning("⏭ No raw model for %s", ep)
+#         if s: silver_models.append(s)
+#         else: logger.warning("⏭ No silver model for %s", ep)
+
+#     if not raw_models and not silver_models:
+#         logger.info("⚠️ No matching dbt models found.")
+#         return {"raw_models": [], "business_models": []}
+
+#     logger.info("📦 Models to copy: %s", raw_models + silver_models)
+
+#     tmp_path = Path(tempfile.mkdtemp(prefix="dbt_filtered_"))
+#     logger.info("📁 Temp dbt project: %s", tmp_path)
+
+#     # Create dirs
+#     for d in ["models", "macros", "seeds", "snapshots", "tests", "analyses", "target", "logs"]:
+#         (tmp_path / d).mkdir(parents=True, exist_ok=True)
+
+#     # Copy only needed models
+#     def copy_model(stem):
+#         src = all_sql_files[stem]
+#         rel = src.relative_to(models_dir)
+#         dest = tmp_path / "models" / rel
+#         dest.parent.mkdir(parents=True, exist_ok=True)
+#         shutil.copy2(src, dest)
+
+#     for m in raw_models + silver_models:
+#         copy_model(m)
+
+#     # dbt_project.yml
+#     orig_proj = yaml.safe_load((project_dir / "dbt_project.yml").read_text())
+#     profile_name = orig_proj.get("profile", "data_platform")
+#     base_dbt_project = {
+#         "name": "filtered_repsly",
+#         "version": "1.0.0",
+#         "config-version": 2,
+#         "profile": profile_name,
+#         "model-paths": ["models"],
+#         "macro-paths": ["macros"],
+#         "seed-paths": ["seeds"],
+#         "snapshot-paths": ["snapshots"],
+#         "test-paths": ["tests"],
+#         "analysis-paths": ["analyses"],
+#         "clean-targets": ["target"],
+#     }
+#     (tmp_path / "dbt_project.yml").write_text(yaml.safe_dump(base_dbt_project, sort_keys=False))
+
+#     # Minimal sources so source('repsly_raw', ...) resolves
+#     raw_schema = config["warehouse"]["schemas"]["raw_schema"]
+#     src_regex = re.compile(r"source\(\s*['\"]repsly_raw['\"]\s*,\s*['\"]([^'\"]+)['\"]\s*\)")
+#     source_tables = set()
+#     for m in raw_models:
+#         rel = all_sql_files[m].relative_to(models_dir)
+#         sql_txt = (tmp_path / "models" / rel).read_text()
+#         matches = src_regex.findall(sql_txt)
+#         if matches:
+#             source_tables.update(matches)
+#         else:
+#             ep_guess = m.replace("raw_", "").replace("_raw", "")
+#             source_tables.add(f"raw_{ep_guess}")
+
+#     src_yaml = [
+#         "version: 2",
+#         "sources:",
+#         "  - name: repsly_raw",
+#         f"    schema: {raw_schema}",
+#         "    tables:"
+#     ] + [f"      - name: {t}" for t in sorted(source_tables)]
+#     (tmp_path / "models" / "_repsly_sources.yml").write_text("\n".join(src_yaml) + "\n")
+#     logger.info("🧾 Wrote minimal sources file with tables: %s", sorted(source_tables))
+
+#     # Helper to run dbt commands
+#     def run_cmd(cmd_list, prefix):
+#         logger.info("▶️ %s: %s", prefix, " ".join(cmd_list))
+#         env = os.environ.copy()
+#         env["DBT_LOG_FORMAT"] = "json"   # easier to parse if needed
+#         try:
+#             res = subprocess.run(cmd_list, cwd=str(tmp_path), capture_output=True, text=True, check=True, env=env)
+#             logger.info("✅ %s succeeded", prefix)
+#             return res.stdout, res.stderr
+#         except subprocess.CalledProcessError as e:
+#             logger.error("❌ %s FAILED", prefix)
+#             logger.error("STDOUT:\n%s", e.stdout)
+#             logger.error("STDERR:\n%s", e.stderr)
+#             raise
+
+#     exec_conf = config["dbt"]["execution"]
+#     select_list = raw_models + silver_models
+
+#     # 1) compile
+#     compile_cmd = [
+#         "dbt", "compile",
+#         "--project-dir", str(tmp_path),
+#         "--profiles-dir", str(profiles_dir),
+#         "--no-partial-parse",
+#         "--select", *select_list
+#     ]
+#     run_cmd(compile_cmd, "dbt compile")
+
+#     # 2) run
+#     run_cmd_list = [
+#         "dbt", "run",
+#         "--project-dir", str(tmp_path),
+#         "--profiles-dir", str(profiles_dir),
+#         "--no-partial-parse",
+#         "--select", *select_list
+#     ]
+#     if exec_conf.get("fail_fast"):
+#         run_cmd_list.append("--fail-fast")
+#     if exec_conf.get("threads"):
+#         run_cmd_list += ["--threads", str(exec_conf["threads"])]
+
+#     try:
+#         out, err = run_cmd(run_cmd_list, "dbt run")
+#     except subprocess.CalledProcessError as e:
+#             logger.error("❌ dbt run FAILED - analyzing errors...")
+            
+#             # Detailed error analysis
+#             rr = tmp_path / "target" / "run_results.json"
+#             mf = tmp_path / "target" / "manifest.json"
+            
+#             if rr.exists() and mf.exists():
+#                 try:
+#                     run_results = json.loads(rr.read_text())
+#                     manifest = json.loads(mf.read_text())
+                    
+#                     failed_nodes = [r for r in run_results.get("results", []) if r.get("status") == "error"]
+                    
+#                     if failed_nodes:
+#                         logger.error(f"🚨 {len(failed_nodes)} dbt models failed:")
+                        
+#                         for result in failed_nodes:
+#                             node_id = result["unique_id"]
+#                             node = manifest["nodes"].get(node_id, {})
+#                             model_name = node.get("name", node_id)
+#                             error_msg = result.get("message", "Unknown error")
+                            
+#                             logger.error(f"   ❌ {model_name}: {error_msg}")
+                            
+#                             # Show compiled SQL for debugging
+#                             compiled_path = node.get("compiled_path")
+#                             if compiled_path:
+#                                 compiled_file = tmp_path / compiled_path
+#                                 if compiled_file.exists():
+#                                     sql_content = compiled_file.read_text()
+#                                     # Show first 500 chars of SQL
+#                                     sql_preview = sql_content[:500] + "..." if len(sql_content) > 500 else sql_content
+#                                     logger.error(f"   📄 Compiled SQL preview:\n{sql_preview}")
+                    
+#                     # Don't delete temp dir for debugging
+#                     logger.error(f"🔍 dbt project preserved for debugging: {tmp_path}")
+                    
+#                 except Exception as parse_error:
+#                     logger.error(f"❌ Failed to parse dbt results: {parse_error}")
+            
+#             else:
+#                 logger.error("❌ dbt results files not found")
+#                 logger.error(f"🔍 Temp project: {tmp_path}")
+            
+#             # Re-raise to fail the task
+#             raise RuntimeError(f"dbt transformations failed: {str(e)}")
+#     finally:
+#         # Only clean on success; leave it if something failed
+#         if (tmp_path / "target" / "run_results.json").exists():
+#             rr = json.loads((tmp_path / "target" / "run_results.json").read_text())
+#             statuses = {r["status"] for r in rr.get("results", [])}
+#             if statuses == {"success"}:
+#                 shutil.rmtree(tmp_path, ignore_errors=True)
+#             else:
+#                 logger.warning("❗ Leaving temp project at %s for debugging", tmp_path)
+
+#     return {"raw_models": raw_models, "business_models": silver_models}
 
 
 # ---------------- DATA QUALITY CHECKS (Enhanced) ---------------- #

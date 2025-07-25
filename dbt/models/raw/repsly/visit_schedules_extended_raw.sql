@@ -1,37 +1,63 @@
--- Raw visit schedules extended data with basic filtering and renaming (consistent TEXT approach)
--- dbt/models/raw/repsly/visit_schedules_extended_raw.sql
+{{ config(
+    materialized='incremental',
+    incremental_strategy='append',
+    on_schema_change='append_new_columns',
+    meta={
+        'description': 'Raw visit schedules extended data from Repsly API - append-only, all fields as strings',
+        'data_source': 'repsly_api',
+        'update_frequency': 'incremental'
+    }
+) }}
 
-{{ config(materialized='view') }}
+-- Bronze layer: Pure append-only storage for visit schedules extended
+-- All fields stored as strings to avoid type conflicts
+SELECT 
+    CAST(COALESCE("ScheduleCode", '') AS String) AS ScheduleCode,
+    CAST(COALESCE("ScheduledDate", '') AS String) AS ScheduledDate,
+    CAST(COALESCE("ScheduledTime", '') AS String) AS ScheduledTime,
+    CAST(COALESCE("UserID", '') AS String) AS UserID,
+    CAST(COALESCE("RepresentativeName", '') AS String) AS RepresentativeName,
+    CAST(COALESCE("ClientCode", '') AS String) AS ClientCode,
+    CAST(COALESCE("ClientName", '') AS String) AS ClientName,
+    CAST(COALESCE("StreetAddress", '') AS String) AS StreetAddress,
+    CAST(COALESCE("ZIP", '') AS String) AS ZIP,
+    CAST(COALESCE("ZIPExt", '') AS String) AS ZIPExt,
+    CAST(COALESCE("City", '') AS String) AS City,
+    CAST(COALESCE("State", '') AS String) AS State,
+    CAST(COALESCE("Country", '') AS String) AS Country,
+    CAST(COALESCE("DueDate", '') AS String) AS DueDate,
+    CAST(COALESCE("VisitNote", '') AS String) AS VisitNote,
+    CAST(COALESCE("ProjectName", '') AS String) AS ProjectName,
+    CAST(COALESCE("ScheduledDuration", '') AS String) AS ScheduledDuration,
+    CAST(COALESCE("RepeatEveryWeeks", '') AS String) AS RepeatEveryWeeks,
+    CAST(COALESCE("RepeatDays", '') AS String) AS RepeatDays,
+    CAST(COALESCE("RepeatEndDate", '') AS String) AS RepeatEndDate,
+    CAST(COALESCE("AlertUsersIfMissed", '') AS String) AS AlertUsersIfMissed,
+    CAST(COALESCE("AlertUsersIfLate", '') AS String) AS AlertUsersIfLate,
+    CAST(COALESCE("AlertUsersIfDone", '') AS String) AS AlertUsersIfDone,
+    CAST(COALESCE("ExternalID", '') AS String) AS ExternalID,
+    CAST(COALESCE("Tasks", '') AS String) AS Tasks,
 
-SELECT
-    "ScheduleCode"::TEXT as schedule_code,
-    "ScheduledDate"::TEXT as scheduled_date_raw,
-    "ScheduledTime"::TEXT as scheduled_time_raw,
-    "UserID"::TEXT as user_id,
-    "RepresentativeName"::TEXT as representative_name,
-    "ClientCode"::TEXT as client_code,
-    "ClientName"::TEXT as client_name,
-    "StreetAddress"::TEXT as street_address,
-    "ZIP"::TEXT as zip_code,
-    "ZIPExt"::TEXT as zip_ext,
-    "City"::TEXT as city,
-    "State"::TEXT as state,
-    "Country"::TEXT as country,
-    "DueDate"::TEXT as due_date_raw,
-    "VisitNote"::TEXT as visit_note,
-    "ProjectName"::TEXT as project_name,
-    "ScheduledDuration"::TEXT as scheduled_duration_raw,
-    "RepeatEveryWeeks"::TEXT as repeat_every_weeks_raw,
-    "RepeatDays"::TEXT as repeat_days_raw,
-    "RepeatEndDate"::TEXT as repeat_end_date_raw,
-    "AlertUsersIfMissed"::TEXT as alert_users_if_missed_raw,
-    "AlertUsersIfLate"::TEXT as alert_users_if_late_raw,
-    "AlertUsersIfDone"::TEXT as alert_users_if_done_raw,
-    "ExternalID"::TEXT as external_id,
-    "Tasks"::TEXT as tasks_raw,
-    "_extracted_at" as extracted_at,
-    "_source_system" as source_system,
-    "_endpoint" as endpoint
+    -- System metadata
+    CAST("_extracted_at" AS String) AS extracted_at,
+    CAST("_source_system" AS String) AS source_system,
+    CAST("_endpoint" AS String) AS endpoint,
+    now() AS dbt_loaded_at,
+    
+    cityHash64(
+        concat(
+            COALESCE("ScheduleCode", ''),
+            COALESCE("ScheduledDate", ''),
+            COALESCE("UserID", ''),
+            COALESCE("ClientCode", ''),
+            "_extracted_at"
+        )
+    ) AS record_hash
 
 FROM {{ source('repsly_raw', 'raw_visit_schedules_extended') }}
-WHERE "ScheduleCode" IS NOT NULL
+
+{% if is_incremental() %}
+WHERE parseDateTimeBestEffort("_extracted_at") > 
+    (SELECT COALESCE(max(parseDateTimeBestEffort(extracted_at)), toDateTime('1900-01-01'))
+     FROM {{ this }})
+{% endif %}

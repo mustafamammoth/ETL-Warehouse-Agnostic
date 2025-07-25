@@ -82,16 +82,13 @@ REPSLY_ENDPOINTS = {
         'path': 'export/representatives',
         'pagination_type': 'static',
         'data_field': 'Representatives',
-        'incremental_field': None
+        'incremental_field': 'ModifiedDate'  # Still has incremental for watermark
     },
     'users': {
         'path': 'export/users',
-        'pagination_type': 'id',
-        'limit': 50,
-        'id_field': 'LastUserID',
+        'pagination_type': 'static',  # CORRECTED: This is static, not ID-based!
         'data_field': 'Users',
-        'total_count_field': 'TotalCount',
-        'incremental_field': 'ModifiedDate'
+        'incremental_field': 'ModifiedDate'  # Still has incremental for watermark
     },
     'products': {
         'path': 'export/products',
@@ -159,19 +156,29 @@ REPSLY_ENDPOINTS = {
         'total_count_field': 'TotalCount',
         'incremental_field': 'Date'
     },
+    
     'visit_schedules': {
         'path': 'export/visitschedules',
         'pagination_type': 'datetime_range',
         'data_field': 'VisitSchedules',
         'url_pattern': 'export/visitschedules/{start_date}/{end_date}',
-        'incremental_field': 'Date'
+        'incremental_field': 'Date',
+        'datetime_format': '%Y-%m-%d',  # API expects YYYY-MM-DD format
+        'max_range_days': 30,  # Smaller chunks to prevent timeouts
+        'requires_auth': True,
+        'priority': 'medium'
     },
+
     'visit_schedules_extended': {
         'path': 'export/schedules',
-        'pagination_type': 'datetime_range',
+        'pagination_type': 'datetime_range', 
         'data_field': 'Schedules',
         'url_pattern': 'export/schedules/{start_date}/{end_date}',
-        'incremental_field': 'Date'
+        'incremental_field': 'Date',
+        'datetime_format': '%Y-%m-%d',
+        'max_range_days': 30,
+        'requires_auth': True,
+        'priority': 'medium'
     },
     'visit_schedule_realizations': {
         'path': 'export/visitrealizations',
@@ -184,7 +191,9 @@ REPSLY_ENDPOINTS = {
         },
         'limit': 50,
         'total_count_field': 'TotalCount',
-        'incremental_field': 'ModifiedDate'
+        'incremental_field': 'Modified',  # Changed from 'ModifiedDate' to 'Modified'
+        'requires_auth': True,
+        'priority': 'medium'
     }
 }
 
@@ -444,8 +453,12 @@ def _update_watermark(endpoint_key: str, new_ts: datetime):
         logger.info(f"🕒 Updated watermark in memory: {endpoint_key} = {_STATE_CACHE[endpoint_key]}")
 
 # ---------------- IMPROVED INCREMENTAL HELPERS ---------------- #
+def _utc_now():
+    """Always return timezone-aware UTC datetime."""
+    return datetime.now(timezone.utc)
+
 def _parse_microsoft_json_date(date_str: str) -> Optional[datetime]:
-    """Parse Microsoft JSON date format with robust error handling."""
+    """Parse Microsoft JSON date format with robust error handling and timezone awareness."""
     if not date_str or date_str == '' or date_str is None:
         return None
     
@@ -470,9 +483,12 @@ def _parse_microsoft_json_date(date_str: str) -> Optional[datetime]:
         if 'T' in date_str:
             if date_str.endswith('Z'):
                 date_str = date_str[:-1] + '+00:00'
+            elif '+' not in date_str and '-' not in date_str[-6:]:
+                # No timezone info, assume UTC
+                date_str += '+00:00'
             return datetime.fromisoformat(date_str)
         
-        # Date only format
+        # Date only format - assume UTC
         return datetime.strptime(date_str, '%Y-%m-%d').replace(tzinfo=timezone.utc)
         
     except Exception as e:
@@ -487,46 +503,73 @@ def _parse_timestamp_column(df: pd.DataFrame, timestamp_field: str) -> pd.Series
     return df[timestamp_field].apply(_parse_microsoft_json_date)
 
 def _should_use_incremental(endpoint_key: str) -> bool:
-    """Check if endpoint should use incremental extraction."""
+    """
+    ENHANCED: Check if endpoint should use incremental extraction.
+    """
     if not CONFIG['extraction']['incremental'].get('enabled', False):
         return False
     
     endpoint_config = REPSLY_ENDPOINTS.get(endpoint_key, {})
+    pagination_type = endpoint_config.get('pagination_type')
     incremental_field = endpoint_config.get('incremental_field')
     
     # Static endpoints don't support incremental
-    if endpoint_config.get('pagination_type') == 'static' or not incremental_field:
+    if pagination_type == 'static':
         return False
     
-    return True
+    # ENHANCED: ID-based endpoints can use incremental if they have an incremental field
+    if pagination_type == 'id':
+        # ID endpoints can still be incremental based on ModifiedDate, etc.
+        return incremental_field is not None
+    
+    # Timestamp and other types can use incremental if they have an incremental field
+    return incremental_field is not None
 
 def _get_incremental_date_range(endpoint_key: str):
-    """Get date range for incremental extraction."""
+    """
+    FIXED: Get date range for incremental extraction with proper timezone handling.
+    """
+    endpoint_config = REPSLY_ENDPOINTS.get(endpoint_key, {})
+    pagination_type = endpoint_config.get('pagination_type')
+    
     if not _should_use_incremental(endpoint_key):
         # Default date range for full extraction
-        end_date = datetime.now()
+        end_date = _utc_now()  # Always UTC
         if TESTING_MODE:
             start_date = end_date - timedelta(days=CONFIG['extraction']['testing']['date_range_days'])
         else:
             start_date = end_date - timedelta(days=CONFIG['extraction']['production']['date_range_days'])
+        logger.info(f"🔄 Full extraction date range for {endpoint_key}: {start_date.isoformat()} to {end_date.isoformat()}")
         return start_date, end_date
     
     last_wm = _get_last_watermark(endpoint_key)
-    end_date = datetime.now()
+    end_date = _utc_now()  # Always UTC
     
     if last_wm:
+        # Ensure last_wm is timezone-aware
+        if last_wm.tzinfo is None:
+            last_wm = last_wm.replace(tzinfo=timezone.utc)
+        
         lookback = CONFIG['extraction']['incremental'].get('lookback_minutes', 10)
         start_date = last_wm - timedelta(minutes=lookback)
-        logger.info(f"🔁 Incremental extract for {endpoint_key} from {start_date.isoformat()}")
+        logger.info(f"🔁 Incremental extract for {endpoint_key} (type: {pagination_type}) from {start_date.isoformat()}")
     else:
         # First run - use default range
         if TESTING_MODE:
             start_date = end_date - timedelta(days=CONFIG['extraction']['testing']['date_range_days'])
         else:
-            start_date = end_date - timedelta(days=CONFIG['extraction']['production']['date_range_days'])
-        logger.info(f"🔄 First run for {endpoint_key}, using date range from {start_date.isoformat()}")
+            # For ID-based endpoints, use shorter initial range
+            if pagination_type == 'id':
+                start_date = end_date - timedelta(days=30)  # Shorter range for ID endpoints
+                logger.info(f"🔄 First run for ID endpoint {endpoint_key}, using 30-day range")
+            else:
+                start_date = end_date - timedelta(days=CONFIG['extraction']['production']['date_range_days'])
+                logger.info(f"🔄 First run for {endpoint_key}, using default range")
+        
+        logger.info(f"🔄 Date range from {start_date.isoformat()} to {end_date.isoformat()}")
     
     return start_date, end_date
+
 
 # ---------------- SAFE WAREHOUSE LOADING FUNCTIONS ---------------- #
 def table_exists(client, full_table):
@@ -836,15 +879,154 @@ def update_extraction_state_after_successful_load(endpoint_key, endpoint_config,
         logger.error("❌ CRITICAL: State not updated - next run may have data gaps!")
 
 # ---------------- IMPROVED PAGINATION + FETCH WITH ERROR HANDLING ---------------- #
+def get_paginated_data_fixed_query_params(session, endpoint_config, endpoint_name):
+    """
+    FIXED: Query parameter pagination for visit_schedule_realizations with proper datetime handling.
+    """
+    all_data = []
+    base_url = CONFIG['api']['base_url']
+    max_retries = 3
+    
+    start_date, end_date = _get_incremental_date_range(endpoint_name)
+    
+    # Ensure both dates are timezone-aware
+    if start_date.tzinfo is None:
+        start_date = start_date.replace(tzinfo=timezone.utc)
+    if end_date.tzinfo is None:
+        end_date = end_date.replace(tzinfo=timezone.utc)
+    
+    # Format date for API (ensure UTC)
+    modified_date = start_date.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z')
+    skip = 0
+    page_size = 50
+    max_pages = 50  # Reduced to prevent infinite loops
+    page_count = 0
+    
+    logger.info(f"   Starting pagination with modified date: {modified_date}")
+    
+    while page_count < max_pages:
+        page_count += 1
+        
+        if skip >= 9500:
+            logger.info(f"   Reached skip limit (9500), advancing date")
+            start_date = start_date + timedelta(days=90)  # Jump forward 90 days
+            if start_date >= _utc_now():
+                logger.info(f"   Reached current date, stopping")
+                break
+            modified_date = start_date.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z')
+            skip = 0
+            page_count = 0
+            continue
+        
+        endpoint_url = f"{base_url}/{endpoint_config['url_pattern']}?modified={modified_date}&skip={skip}"
+        logger.info(f"   Page {page_count}: Fetching from {endpoint_url}")
+        
+        success = False
+        for attempt in range(max_retries):
+            try:
+                response = session.get(endpoint_url, timeout=CONFIG['api']['rate_limiting']['timeout_seconds'])
+                
+                if response.status_code == 400:
+                    logger.info(f"   400 Bad Request, advancing date by 90 days")
+                    start_date = start_date + timedelta(days=90)
+                    if start_date >= _utc_now():
+                        logger.info(f"   Reached current date, stopping")
+                        return all_data
+                    modified_date = start_date.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z')
+                    skip = 0
+                    page_count = 0
+                    success = True
+                    break
+                
+                response.raise_for_status()
+                data = response.json()
+                
+                records = data.get(endpoint_config['data_field'], [])
+                logger.info(f"   Retrieved {len(records)} records (total so far: {len(all_data)})")
+                
+                if not records:
+                    logger.info(f"   No records found, advancing date by 90 days")
+                    start_date = start_date + timedelta(days=90)
+                    if start_date >= _utc_now():
+                        logger.info(f"   Reached current date, stopping")
+                        return all_data
+                    modified_date = start_date.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z')
+                    skip = 0
+                    page_count = 0
+                    success = True
+                    break
+                
+                all_data.extend(records)
+                
+                # Check testing limit
+                if TESTING_MODE and MAX_RECORDS_PER_ENDPOINT and len(all_data) >= MAX_RECORDS_PER_ENDPOINT:
+                    all_data = all_data[:MAX_RECORDS_PER_ENDPOINT]
+                    logger.info(f"   Reached testing limit of {MAX_RECORDS_PER_ENDPOINT} records")
+                    return all_data
+                
+                if len(records) < page_size:
+                    logger.info(f"   Got fewer records than page size, advancing date")
+                    start_date = start_date + timedelta(days=90)
+                    if start_date >= _utc_now():
+                        return all_data
+                    modified_date = start_date.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z')
+                    skip = 0
+                    page_count = 0
+                    success = True
+                    break
+                
+                skip += page_size
+                smart_rate_limit(response, CONFIG)
+                success = True
+                break
+                
+            except requests.exceptions.RequestException as e:
+                logger.warning(f"   Request error on page {page_count}, attempt {attempt + 1}: {e}")
+                if attempt == max_retries - 1:
+                    logger.warning(f"   Failed after {max_retries} attempts, advancing date")
+                    start_date = start_date + timedelta(days=90)
+                    if start_date >= _utc_now():
+                        return all_data
+                    modified_date = start_date.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z')
+                    skip = 0
+                    page_count = 0
+                    success = True
+                    break
+                time.sleep(2 ** attempt)
+            
+            except Exception as e:
+                logger.error(f"   Unexpected error on page {page_count}, attempt {attempt + 1}: {e}")
+                if attempt == max_retries - 1:
+                    logger.error(f"   Giving up on this page after {max_retries} attempts")
+                    # Try advancing date instead of failing completely
+                    start_date = start_date + timedelta(days=90)
+                    if start_date >= _utc_now():
+                        return all_data
+                    modified_date = start_date.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z')
+                    skip = 0
+                    page_count = 0
+                    success = True
+                    break
+                time.sleep(2 ** attempt)
+        
+        if not success:
+            logger.error(f"   Page {page_count} failed completely, stopping")
+            break
+    
+    logger.info(f"✅ {endpoint_name}: Collected {len(all_data)} total records")
+    return all_data
+
 def get_paginated_data(session, endpoint_config, endpoint_name):
-    """Get data from Repsly endpoint with robust pagination and error handling."""
+    """
+    UPDATED: Get data from Repsly endpoint with fixed datetime handling for query_params.
+    """
     all_data = []
     base_url = CONFIG['api']['base_url']
     max_retries = 3
     consecutive_failures = 0
     
     if endpoint_config['pagination_type'] == 'static':
-        # Static endpoints - single request
+        # Static endpoints - single request (unchanged)
         endpoint_url = f"{base_url}/{endpoint_config['path']}"
         logger.info(f"   Fetching static data from: {endpoint_url}")
         
@@ -869,12 +1051,22 @@ def get_paginated_data(session, endpoint_config, endpoint_name):
                     raise
                 time.sleep(2 ** attempt)  # Exponential backoff
     
+    elif endpoint_config['pagination_type'] == 'query_params':
+        # FIXED: Use the new query params handler with proper datetime handling
+        return get_paginated_data_fixed_query_params(session, endpoint_config, endpoint_name)
+    
     elif endpoint_config['pagination_type'] == 'datetime_range':
-        # Date range endpoints
+        # Date range endpoints (keep existing logic but ensure timezone awareness)
         start_date, end_date = _get_incremental_date_range(endpoint_name)
         
+        # Ensure timezone awareness
+        if start_date.tzinfo is None:
+            start_date = start_date.replace(tzinfo=timezone.utc)
+        if end_date.tzinfo is None:
+            end_date = end_date.replace(tzinfo=timezone.utc)
+        
         # Split large date ranges to avoid timeouts
-        max_range_days = CONFIG.get('repsly_specific', {}).get('date_ranges', {}).get(endpoint_name, {}).get('max_range_days', 90)
+        max_range_days = endpoint_config.get('max_range_days', 30)
         current_start = start_date
         
         while current_start < end_date:
@@ -911,104 +1103,8 @@ def get_paginated_data(session, endpoint_config, endpoint_name):
             
             current_start = current_end + timedelta(days=1)
     
-    elif endpoint_config['pagination_type'] == 'query_params':
-        # Query parameter based pagination with improved error handling
-        start_date, end_date = _get_incremental_date_range(endpoint_name)
-        
-        modified_date = start_date.strftime('%Y-%m-%dT%H:%M:%S.000Z')
-        skip = 0
-        page_size = 50
-        max_pages = 190
-        page_count = 0
-        
-        logger.info(f"   Starting pagination with modified date: {modified_date}")
-        
-        while page_count < max_pages:
-            page_count += 1
-            
-            if skip >= 9500:
-                logger.info(f"   Reached skip limit (9500), stopping pagination")
-                break
-            
-            endpoint_url = f"{base_url}/{endpoint_config['url_pattern']}?modified={modified_date}&skip={skip}"
-            logger.info(f"   Page {page_count}: Fetching from {endpoint_url}")
-            
-            for attempt in range(max_retries):
-                try:
-                    response = session.get(endpoint_url, timeout=CONFIG['api']['rate_limiting']['timeout_seconds'])
-                    
-                    if response.status_code == 400:
-                        logger.info(f"   400 Bad Request, trying newer date")
-                        start_date = start_date + timedelta(days=30)
-                        modified_date = start_date.strftime('%Y-%m-%dT%H:%M:%S.000Z')
-                        skip = 0
-                        page_count = 0
-                        break
-                    
-                    response.raise_for_status()
-                    data = response.json()
-                    
-                    records = data.get(endpoint_config['data_field'], [])
-                    logger.info(f"   Retrieved {len(records)} records (total so far: {len(all_data)})")
-                    
-                    if not records:
-                        logger.info(f"   No records found, trying newer date")
-                        start_date = start_date + timedelta(days=30)
-                        modified_date = start_date.strftime('%Y-%m-%dT%H:%M:%S.000Z')
-                        skip = 0
-                        
-                        if start_date > datetime.now():
-                            logger.info(f"   Reached current date, stopping pagination")
-                            return all_data
-                        break
-                    
-                    all_data.extend(records)
-                    
-                    # Check testing limit
-                    if TESTING_MODE and MAX_RECORDS_PER_ENDPOINT and len(all_data) >= MAX_RECORDS_PER_ENDPOINT:
-                        all_data = all_data[:MAX_RECORDS_PER_ENDPOINT]
-                        logger.info(f"   Reached testing limit of {MAX_RECORDS_PER_ENDPOINT} records")
-                        return all_data
-                    
-                    if len(records) < page_size:
-                        logger.info(f"   Got fewer records than page size, moving to newer date")
-                        start_date = start_date + timedelta(days=30)
-                        modified_date = start_date.strftime('%Y-%m-%dT%H:%M:%S.000Z')
-                        skip = 0
-                        
-                        if start_date > datetime.now():
-                            return all_data
-                        break
-                    
-                    skip += page_size
-                    smart_rate_limit(response, CONFIG)
-                    break
-                    
-                except requests.exceptions.RequestException as e:
-                    logger.warning(f"   Request error on page {page_count}, attempt {attempt + 1}: {e}")
-                    if attempt == max_retries - 1:
-                        if page_count == 1:
-                            start_date = start_date + timedelta(days=30)
-                            modified_date = start_date.strftime('%Y-%m-%dT%H:%M:%S.000Z')
-                            skip = 0
-                            page_count = 0
-                            break
-                        else:
-                            start_date = start_date + timedelta(days=30)
-                            modified_date = start_date.strftime('%Y-%m-%dT%H:%M:%S.000Z')
-                            skip = 0
-                            break
-                    time.sleep(2 ** attempt)
-                
-                except Exception as e:
-                    logger.error(f"   Unexpected error on page {page_count}, attempt {attempt + 1}: {e}")
-                    if attempt == max_retries - 1:
-                        logger.error(f"   Giving up on this page after {max_retries} attempts")
-                        break
-                    time.sleep(2 ** attempt)
-    
     else:
-        # Standard paginated endpoints (id or timestamp based) with improved error handling
+        # Standard paginated endpoints (id or timestamp based) - keep existing logic
         if _should_use_incremental(endpoint_name):
             if endpoint_config['pagination_type'] == 'id':
                 last_id_key = f"{endpoint_name}_last_id"
@@ -1279,44 +1375,153 @@ def extract_repsly_endpoint(endpoint_key, **context):
 
 
 def update_state_after_verified_load(endpoint_key, endpoint_config, df, raw_data, extracted_at):
-    """Update state ONLY after verified warehouse load - prevents data loss."""
+    """
+    FIXED: Update state ONLY after verified warehouse load - handles ALL pagination types.
+    """
     try:
         logger.info(f"📝 Updating state after VERIFIED load for {endpoint_key}")
         
-        # Update watermark from successfully loaded data
+        pagination_type = endpoint_config.get('pagination_type')
         incremental_field = endpoint_config.get('incremental_field')
-        if incremental_field and not df.empty:
-            incremental_columns = [col for col in df.columns if incremental_field.lower() in col.lower()]
-            if incremental_columns:
-                actual_field = incremental_columns[0]
-                timestamps = _parse_timestamp_column(df, actual_field)
-                valid_timestamps = [ts for ts in timestamps if ts is not None]
+        
+        # ENHANCED: Handle different pagination types properly
+        if pagination_type == 'id':
+            # ID-based pagination: Update both ID state AND watermark
+            if raw_data:
+                # Update pagination ID state
+                id_field_name = endpoint_config.get('id_field', 'LastUserID').replace('Last', '')
+                if id_field_name in raw_data[-1]:
+                    last_id_key = f"{endpoint_key}_last_id"
+                    with _STATE_LOCK:
+                        _STATE_CACHE[last_id_key] = raw_data[-1][id_field_name]
+                    logger.info(f"   📝 Updated ID state: {raw_data[-1][id_field_name]}")
+            
+            # CRITICAL FIX: Always update watermark for ID-based endpoints
+            if incremental_field and not df.empty:
+                # Try to find incremental field in DataFrame
+                incremental_columns = [col for col in df.columns 
+                                     if incremental_field.lower() in col.lower() or 
+                                        incremental_field.replace('Date', '').lower() in col.lower()]
                 
-                if valid_timestamps:
-                    max_ts = max(valid_timestamps)
-                    _update_watermark(endpoint_key, max_ts)
-                    logger.info(f"🕒 Watermark updated from loaded data: {max_ts.isoformat()}")
+                if incremental_columns:
+                    actual_field = incremental_columns[0]
+                    timestamps = _parse_timestamp_column(df, actual_field)
+                    valid_timestamps = [ts for ts in timestamps if ts is not None]
+                    
+                    if valid_timestamps:
+                        max_ts = max(valid_timestamps)
+                        _update_watermark(endpoint_key, max_ts)
+                        logger.info(f"🕒 ID endpoint watermark from data: {max_ts.isoformat()}")
+                    else:
+                        # Fallback: Use extraction timestamp for ID-based endpoints
+                        _update_watermark(endpoint_key, extracted_at)
+                        logger.info(f"🕒 ID endpoint fallback watermark: {extracted_at.isoformat()}")
                 else:
-                    # Fallback to extraction timestamp
+                    # CRITICAL FIX: No incremental field found - use extraction timestamp
+                    logger.warning(f"⚠️ Incremental field '{incremental_field}' not found in {endpoint_key} data")
                     _update_watermark(endpoint_key, extracted_at)
-                    logger.info(f"🕒 Fallback watermark: {extracted_at.isoformat()}")
+                    logger.info(f"🕒 ID endpoint extraction timestamp watermark: {extracted_at.isoformat()}")
+            else:
+                # No incremental field defined - still set watermark to extraction time
+                _update_watermark(endpoint_key, extracted_at)
+                logger.info(f"🕒 ID endpoint no-incremental watermark: {extracted_at.isoformat()}")
         
-        # Update pagination state
-        if endpoint_config['pagination_type'] == 'id' and raw_data:
-            id_field_name = endpoint_config.get('id_field', 'LastClientNoteID').replace('Last', '')
-            if id_field_name in raw_data[-1]:
-                last_id_key = f"{endpoint_key}_last_id"
-                with _STATE_LOCK:
-                    _STATE_CACHE[last_id_key] = raw_data[-1][id_field_name]
-                logger.info(f"   📝 Updated ID state: {raw_data[-1][id_field_name]}")
+        elif pagination_type == 'timestamp':
+            # Timestamp-based pagination: Update timestamp state AND watermark
+            if raw_data:
+                timestamp_key = f"{endpoint_key}_last_timestamp"
+                # Get timestamp from API response metadata
+                if hasattr(raw_data, '__iter__') and len(raw_data) > 0:
+                    # Try to get from last record or use current logic
+                    pass  # Keep existing timestamp pagination logic
+            
+            # Update watermark from data
+            if incremental_field and not df.empty:
+                incremental_columns = [col for col in df.columns if incremental_field.lower() in col.lower()]
+                if incremental_columns:
+                    actual_field = incremental_columns[0]
+                    timestamps = _parse_timestamp_column(df, actual_field)
+                    valid_timestamps = [ts for ts in timestamps if ts is not None]
+                    
+                    if valid_timestamps:
+                        max_ts = max(valid_timestamps)
+                        _update_watermark(endpoint_key, max_ts)
+                        logger.info(f"🕒 Timestamp watermark from data: {max_ts.isoformat()}")
+                    else:
+                        _update_watermark(endpoint_key, extracted_at)
+                        logger.info(f"🕒 Timestamp fallback watermark: {extracted_at.isoformat()}")
+                else:
+                    _update_watermark(endpoint_key, extracted_at)
+                    logger.info(f"🕒 Timestamp extraction watermark: {extracted_at.isoformat()}")
+            else:
+                _update_watermark(endpoint_key, extracted_at)
+                logger.info(f"🕒 Timestamp no-incremental watermark: {extracted_at.isoformat()}")
         
-        # CRITICAL: Save state atomically
+        elif pagination_type == 'static':
+            # Static endpoints: Only update watermark to extraction time
+            _update_watermark(endpoint_key, extracted_at)
+            logger.info(f"🕒 Static endpoint watermark: {extracted_at.isoformat()}")
+        
+        elif pagination_type == 'datetime_range':
+            # Date range endpoints: Update watermark from data or extraction time
+            if incremental_field and not df.empty:
+                incremental_columns = [col for col in df.columns if incremental_field.lower() in col.lower()]
+                if incremental_columns:
+                    actual_field = incremental_columns[0]
+                    timestamps = _parse_timestamp_column(df, actual_field)
+                    valid_timestamps = [ts for ts in timestamps if ts is not None]
+                    
+                    if valid_timestamps:
+                        max_ts = max(valid_timestamps)
+                        _update_watermark(endpoint_key, max_ts)
+                        logger.info(f"🕒 Date range watermark from data: {max_ts.isoformat()}")
+                    else:
+                        _update_watermark(endpoint_key, extracted_at)
+                        logger.info(f"🕒 Date range fallback watermark: {extracted_at.isoformat()}")
+                else:
+                    _update_watermark(endpoint_key, extracted_at)
+                    logger.info(f"🕒 Date range extraction watermark: {extracted_at.isoformat()}")
+            else:
+                _update_watermark(endpoint_key, extracted_at)
+                logger.info(f"🕒 Date range no-incremental watermark: {extracted_at.isoformat()}")
+        
+        elif pagination_type == 'query_params':
+            # Query parameter pagination: Update watermark
+            if incremental_field and not df.empty:
+                incremental_columns = [col for col in df.columns if incremental_field.lower() in col.lower()]
+                if incremental_columns:
+                    actual_field = incremental_columns[0]
+                    timestamps = _parse_timestamp_column(df, actual_field)
+                    valid_timestamps = [ts for ts in timestamps if ts is not None]
+                    
+                    if valid_timestamps:
+                        max_ts = max(valid_timestamps)
+                        _update_watermark(endpoint_key, max_ts)
+                        logger.info(f"🕒 Query param watermark from data: {max_ts.isoformat()}")
+                    else:
+                        _update_watermark(endpoint_key, extracted_at)
+                        logger.info(f"🕒 Query param fallback watermark: {extracted_at.isoformat()}")
+                else:
+                    _update_watermark(endpoint_key, extracted_at)
+                    logger.info(f"🕒 Query param extraction watermark: {extracted_at.isoformat()}")
+            else:
+                _update_watermark(endpoint_key, extracted_at)
+                logger.info(f"🕒 Query param no-incremental watermark: {extracted_at.isoformat()}")
+        
+        else:
+            # Unknown pagination type: Still set watermark
+            logger.warning(f"⚠️ Unknown pagination type '{pagination_type}' for {endpoint_key}")
+            _update_watermark(endpoint_key, extracted_at)
+            logger.info(f"🕒 Unknown type watermark: {extracted_at.isoformat()}")
+        
+        # CRITICAL: Save state atomically after all updates
         _save_state()
         logger.info("✅ State saved after verified load")
         
     except Exception as e:
         logger.error(f"❌ Failed to update state: {e}")
         logger.error("❌ CRITICAL: Next run may have data gaps!")
+        raise  # Raise to indicate state corruption
         raise  # Raise to indicate state corruption
 
 

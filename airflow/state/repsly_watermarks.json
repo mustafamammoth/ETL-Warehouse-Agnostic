@@ -1,7 +1,17 @@
 {
-  "client_notes": "2023-03-09T14:35:31Z",
-  "client_notes_last_id": 451076185,
-  "clients": "2025-07-24T19:13:11.109910Z",
-  "clients_last_timestamp": 12948736605,
-  "visits_last_timestamp": 12948886153
+  "client_notes": "2024-11-15T14:21:07Z",
+  "client_notes_last_id": 588563558,
+  "clients": "2025-07-24T20:58:54.141060Z",
+  "clients_last_timestamp": 12949127195,
+  "daily_working_time": "2023-05-03T12:50:39Z",
+  "daily_working_time_last_id": 15514151,
+  "forms": "2025-07-25T00:10:17.774476Z",
+  "forms_last_id": 171203031,
+  "representatives": "2025-07-25T00:10:12.027473Z",
+  "users": "2025-07-24T20:03:34.970517Z",
+  "visit_schedule_realizations": "2025-07-25T00:07:47.782000Z",
+  "visit_schedules": "2025-07-25T00:00:00Z",
+  "visit_schedules_extended": "2025-07-25T00:00:00Z",
+  "visits": "2025-07-25T00:10:09.283094Z",
+  "visits_last_timestamp": 12949785846
 }

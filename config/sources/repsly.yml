@@ -65,18 +65,18 @@ extraction:
     
     # Optional endpoints (can be enabled when needed)
     optional_extract:
-      # - "daily_working_time"
+      - "daily_working_time"
       - "visits"
       - "representatives"  
       - "users"
       # - "products"
       # - "retail_audits"
-      # - "purchase_orders"
-      # - "forms"
+      - "purchase_orders"
+      - "forms"
       # - "photos"
-      # - "visit_schedules"
-      # - "visit_schedules_extended"
-      # - "visit_schedule_realizations"
+      - "visit_schedules"
+      - "visit_schedules_extended"
+      - "visit_schedule_realizations"
       # - "document_types"
       # - "pricelists"
       # - "pricelist_items"
@@ -84,7 +84,7 @@ extraction:
     # Disabled endpoints (known issues or not needed)
     disabled:
       - "photos"              # Large data volume, can cause memory issues
-      - "visit_schedule_realizations"  # Complex pagination issues
+      # - "visit_schedule_realizations"  # Complex pagination issues
       
     # FIXED: Endpoint dependencies and priorities
     dependencies:
