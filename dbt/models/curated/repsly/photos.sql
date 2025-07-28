@@ -28,10 +28,10 @@ WITH base AS (
 parsed as (
     SELECT
         *,
-        /* Parse MS /Date(…)/ pattern */
+        /* Parse MS /Date(…)/ pattern - Fixed: Cast to String before toDateTimeOrNull */
         CASE
             WHEN startsWith(date_and_time_raw, '/Date(') AND endsWith(date_and_time_raw, ')/')
-            THEN toDateTimeOrNull(toInt64OrNull(extract(date_and_time_raw, '/Date\\((\\d+)')) / 1000)
+            THEN toDateTimeOrNull(toString(toInt64OrNull(extract(date_and_time_raw, '/Date\\((\\d+)')) / 1000))
         END                                                                         AS photo_timestamp_ms,
         /* Best effort for anything else */
         parseDateTimeBestEffortOrNull(date_and_time_raw)                            AS photo_timestamp_best
@@ -42,7 +42,7 @@ enriched AS (
     SELECT
         *,
         coalesce(photo_timestamp_ms, photo_timestamp_best)                          AS photo_timestamp,
-        toDate(coalesce(photo_timestamp_ms, photo_timestamp_best))                  AS photo_date,
+        coalesce(toDate(coalesce(photo_timestamp_ms, photo_timestamp_best)), toDate('1900-01-01')) AS photo_date,
         trim(coalesce(tag, ''))                                                     AS tags_raw,
 
         positionCaseInsensitive(tags_raw, 'Competition') > 0                        AS is_competition_photo,

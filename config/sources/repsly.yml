@@ -48,6 +48,18 @@ extraction:
     lookback_minutes: 30           # INCREASED: More overlap to prevent gaps
     full_refresh_days: 90          # Trigger full refresh every 90 days
     state_path: "/opt/airflow/state/repsly_watermarks.json"
+
+    initial_extraction:
+      # Set this to when you want data extraction to start from
+      start_date: "2025-01-01"  # 🎯 CHANGE THIS DATE to your desired start
+      
+      # Reset watermarks on next run (set to true once, then back to false)
+      reset_watermarks: false  # 🔥 Set to true for ONE run to reset state
+      
+      # Backfill strategy for large date ranges
+      backfill_strategy: "chunked"  # chunk large date ranges
+      backfill_chunk_days: 30       # process 30 days at a time
+
   testing:
     max_records_per_endpoint: 100  # Increased for better testing
     date_range_days: 7             # Reduced for faster testing
@@ -73,7 +85,7 @@ extraction:
       # - "retail_audits"
       - "purchase_orders"
       - "forms"
-      # - "photos"
+      - "photos"
       - "visit_schedules"
       - "visit_schedules_extended"
       - "visit_schedule_realizations"
@@ -83,7 +95,7 @@ extraction:
     
     # Disabled endpoints (known issues or not needed)
     disabled:
-      - "photos"              # Large data volume, can cause memory issues
+      # - "photos"              # Large data volume, can cause memory issues
       # - "visit_schedule_realizations"  # Complex pagination issues
       
     # FIXED: Endpoint dependencies and priorities
@@ -101,10 +113,10 @@ extraction:
 warehouse:
   active_warehouse: "clickhouse"
   schemas:
-    bronze_schema: "repsly_bronze"
-    silver_schema: "repsly_silver"
-    raw_schema: "repsly_bronze"      # Alias for compatibility
-    staging_schema: "repsly_silver"  # Alias for compatibility
+    bronze_schema: "bronze_repsly"
+    silver_schema: "silver_repsly"
+    raw_schema: "bronze_repsly"      # Alias for compatibility
+    staging_schema: "silver_repsly"  # Alias for compatibility
   
   # ADDED: Warehouse-specific settings
   clickhouse:

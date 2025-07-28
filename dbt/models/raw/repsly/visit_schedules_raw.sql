@@ -41,7 +41,7 @@ SELECT
         )
     ) AS record_hash
 
-FROM {{ source('repsly_raw', 'raw_visit_schedules') }}
+FROM {{ source('bronze_repsly', 'raw_visit_schedules') }}
 
 {% if is_incremental() %}
 WHERE parseDateTimeBestEffort("_extracted_at") > 

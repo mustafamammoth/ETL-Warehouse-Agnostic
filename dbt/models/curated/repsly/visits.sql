@@ -1,7 +1,7 @@
 {{ config(
     materialized='table',
-    schema=var('silver_schema', 'repsly_silver'),
     engine='MergeTree()',
+    schema=var('silver_schema', 'repsly_silver'),
     order_by='(visit_id, processed_at)',
     partition_by='toYYYYMM(processed_at)',
     meta={

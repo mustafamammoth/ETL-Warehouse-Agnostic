@@ -804,6 +804,12 @@ def run_dbt_transformations(**context):
     for d in ["models", "macros", "seeds", "snapshots", "tests", "analyses", "target", "logs"]:
         (tmp_path / d).mkdir(parents=True, exist_ok=True)
 
+    macros_src = project_dir / "macros"
+    if macros_src.exists():
+        macros_dest = tmp_path / "macros"
+        shutil.copytree(macros_src, macros_dest, dirs_exist_ok=True)
+        logger.info("✅ Copied macros to temp project")
+
     # Copy only needed models
     def copy_model(stem):
         src = all_sql_files[stem]
@@ -816,13 +822,16 @@ def run_dbt_transformations(**context):
         copy_model(m)
 
     # dbt_project.yml
+    # --- BEGIN REPLACEMENT ---
     orig_proj = yaml.safe_load((project_dir / "dbt_project.yml").read_text())
-    profile_name = orig_proj.get("profile", "data_platform")
-    base_dbt_project = {
-        "name": "filtered_repsly",
+
+    # Keep your original profile name and full models/vars tree so schemas map correctly
+    base = {
+        "name": orig_proj["name"],
         "version": "1.0.0",
         "config-version": 2,
-        "profile": profile_name,
+        "profile": orig_proj.get("profile", "data_platform"),
+        # Limit paths to those we actually copied into the tmp project
         "model-paths": ["models"],
         "macro-paths": ["macros"],
         "seed-paths": ["seeds"],
@@ -830,12 +839,20 @@ def run_dbt_transformations(**context):
         "test-paths": ["tests"],
         "analysis-paths": ["analyses"],
         "clean-targets": ["target"],
+        # CRITICAL: carry over your models/vars so raw→bronze_* and curated→silver_* stay intact
+        "models": orig_proj.get("models", {}),
+        "vars":   orig_proj.get("vars", {}),
     }
-    (tmp_path / "dbt_project.yml").write_text(yaml.safe_dump(base_dbt_project, sort_keys=False))
+    (tmp_path / "dbt_project.yml").write_text(yaml.safe_dump(base, sort_keys=False))
+    # --- END REPLACEMENT ---
+
+
+
 
     # Minimal sources so source('repsly_raw', ...) resolves
     raw_schema = config["warehouse"]["schemas"]["raw_schema"]
-    src_regex = re.compile(r"source\(\s*['\"]repsly_raw['\"]\s*,\s*['\"]([^'\"]+)['\"]\s*\)")
+    src_regex = re.compile(r"source\(\s*['\"]bronze_repsly['\"]\s*,\s*['\"]([^'\"]+)['\"]\s*\)")
+
     source_tables = set()
     for m in raw_models:
         rel = all_sql_files[m].relative_to(models_dir)
@@ -848,11 +865,11 @@ def run_dbt_transformations(**context):
             source_tables.add(f"raw_{ep_guess}")
 
     src_yaml = [
-        "version: 2",
-        "sources:",
-        "  - name: repsly_raw",
-        f"    schema: {raw_schema}",
-        "    tables:"
+    "version: 2",
+    "sources:",
+    "  - name: bronze_repsly",  # Changed from repsly_raw
+    f"    schema: {raw_schema}",
+    "    tables:"
     ] + [f"      - name: {t}" for t in sorted(source_tables)]
     (tmp_path / "models" / "_repsly_sources.yml").write_text("\n".join(src_yaml) + "\n")
     logger.info("🧾 Wrote minimal sources file with tables: %s", sorted(source_tables))

@@ -76,7 +76,8 @@ def generate_docker_compose():
             './dbt:/opt/airflow/dbt',
             './config:/opt/airflow/config',
             './scripts:/opt/airflow/scripts',
-            './extractors:/opt/airflow/extractors'
+            './extractors:/opt/airflow/extractors',
+            './macros:/opt/airflow/macros'
 
         ]
         

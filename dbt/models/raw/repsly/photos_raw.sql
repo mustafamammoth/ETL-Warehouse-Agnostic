@@ -1,7 +1,6 @@
 {{-
     config(
         materialized       = 'incremental',
-        schema             = var('bronze_schema', 'repsly_bronze'),
         engine             = 'MergeTree()',
         order_by           = '(photo_id_nn, extracted_at_nn)',
         partition_by       = 'toYYYYMM(extracted_at_nn)',
@@ -33,7 +32,8 @@ WITH src AS (
         _extracted_at                  AS extracted_at_str,
         _source_system                 AS source_system,
         _endpoint                      AS endpoint
-    FROM {{ source('repsly_raw', 'raw_photos') }}
+    FROM {{ source('bronze_repsly', 'raw_photos') }}
+
     WHERE "PhotoID" IS NOT NULL
 ),
 typed AS (

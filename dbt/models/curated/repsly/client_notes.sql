@@ -1,9 +1,9 @@
 {{ config(
     materialized='table',
-    schema=var('silver_schema', 'repsly_silver'),
     engine='MergeTree()',
     order_by='(client_note_id, processed_at)',
-    partition_by='toYYYYMM(COALESCE(note_date, toDate(\'1970-01-01\')))',
+    schema=var('silver_schema', 'repsly_silver'),
+    partition_by='toYYYYMM(COALESCE(note_date, toDate(''1970-01-01'')))',
     meta={
         'description': 'Cleaned and enhanced client notes data with robust date parsing',
         'business_key': 'client_note_id',

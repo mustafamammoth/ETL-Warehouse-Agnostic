@@ -1,50 +1,46 @@
-# dbt_project.yml
-name: 'acumatica_data_platform'
-version: '1.0.0'
+name: "acumatica_data_platform"
+version: "1.0.0"
 config-version: 2
 
-# This setting configures which "profile" dbt uses for this project.
-profile: 'data_platform'
+profile: "data_platform"
 
-# These configurations specify where dbt should look for different types of files.
-model-paths: ["models"]
-analysis-paths: ["analyses"] 
-test-paths: ["tests"]
-seed-paths: ["seeds"]
-macro-paths: ["macros"]
+# Paths ----------------------------------------------------------------------
+model-paths:    ["models"]
+analysis-paths: ["analyses"]
+test-paths:     ["tests"]
+seed-paths:     ["seeds"]
+macro-paths:    ["macros"]
 snapshot-paths: ["snapshots"]
 
-clean-targets:         # directories to be removed by `dbt clean`
-  - "target"
-  - "dbt_packages"
+clean-targets: ["target", "dbt_packages"]
 
-# Configuring models - UPDATED WITH PROPER SCHEMAS
+# Project‑wide variables ------------------------------------------------------
+vars:
+  start_date: "2019-01-01"
+  bronze_schema: "bronze_repsly"   # still available for any model‑level var() calls
+  silver_schema: "silver_repsly"
+
+# Model configuration --------------------------------------------------------
 models:
   acumatica_data_platform:
-    # BRONZE LAYER: Raw data from sources
+
+    # ────────────────────  BRONZE (raw)  ────────────────────
     raw:
       +materialized: view
-      # Source-specific schemas for bronze layer
       acumatica:
-        +schema: bronze_acumatica
+        +database: bronze_acumatica
       repsly:
-        +schema: bronze_repsly  # Future: when you add Repsly
-    
-    # SILVER LAYER: Cleaned, validated business data  
+        +database: bronze_repsly
+
+    # ────────────────────  SILVER (curated)  ────────────────────
     curated:
       +materialized: table
-      # Source-specific schemas for silver layer
       acumatica:
-        +schema: silver_acumatica
+        +database: silver_acumatica
       repsly:
-        +schema: silver_repsly  # Future: when you add Repsly
-    
-    # GOLD LAYER: Cross-source business logic (future)
+        +database: silver_repsly
+
+    # ────────────────────  GOLD (analytics)  ────────────────────
     analytics:
       +materialized: table
-      +schema: gold_unified  # Future: cross-source analytics
-
-# Variables
-vars:
-  # Override this in your profiles.yml or from the command line
-  start_date: '2019-01-01'
+      +schema: gold_unified

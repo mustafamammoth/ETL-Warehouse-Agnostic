@@ -49,7 +49,8 @@ SELECT
         COALESCE(toString(_extracted_at), '')
     )) as record_hash
 
-FROM {{ source('repsly_raw', 'raw_forms') }}
+FROM {{ source('bronze_repsly', 'raw_forms') }}
+
 
 {% if is_incremental() %}
     WHERE _extracted_at > (SELECT MAX(extracted_at) FROM {{ this }})

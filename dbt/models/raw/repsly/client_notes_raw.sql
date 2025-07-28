@@ -50,7 +50,7 @@ SELECT
         )
     ) AS record_hash
 
-FROM {{ source('repsly_raw', 'raw_client_notes') }}
+FROM {{ source('bronze_repsly', 'raw_client_notes') }}
 
 -- CRITICAL: Only prevent duplicate appends in incremental mode
 {% if is_incremental() %}

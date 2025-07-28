@@ -1,8 +1,9 @@
 {{ config(
     materialized='table',
-    schema=var('silver_schema', 'repsly_silver'),
     engine='MergeTree()',
     order_by='(bronze_processed_at, processed_at)',
+    schema=var('silver_schema', 'repsly_silver'),
+
     partition_by='toYYYYMM(bronze_processed_at)',
     meta={
         'description': 'Cleaned visit schedule realizations data from Repsly',
