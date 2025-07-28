@@ -17,7 +17,8 @@ clean-targets: ["target", "dbt_packages"]
 # Project‑wide variables ------------------------------------------------------
 vars:
   start_date: "2019-01-01"
-  bronze_schema: "bronze_repsly"   # still available for any model‑level var() calls
+  # Legacy variables (still available for any model‑level var() calls)
+  bronze_schema: "bronze_repsly"   
   silver_schema: "silver_repsly"
 
 # Model configuration --------------------------------------------------------
@@ -31,6 +32,8 @@ models:
         +database: bronze_acumatica
       repsly:
         +database: bronze_repsly
+      leaflink:
+        +database: bronze_leaflink
 
     # ────────────────────  SILVER (curated)  ────────────────────
     curated:
@@ -39,6 +42,8 @@ models:
         +database: silver_acumatica
       repsly:
         +database: silver_repsly
+      leaflink:
+        +database: silver_leaflink
 
     # ────────────────────  GOLD (analytics)  ────────────────────
     analytics:

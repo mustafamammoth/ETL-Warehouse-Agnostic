@@ -45,6 +45,9 @@ def generate_docker_compose():
             'REPSLY_BASE_URL=${REPSLY_BASE_URL}',
             'REPSLY_USERNAME=${REPSLY_USERNAME}',
             'REPSLY_PASSWORD=${REPSLY_PASSWORD}',
+            # Leaflink Configuration
+            'LEAFLINK_API_KEY=${LEAFLINK_API_KEY}',
+            'LEAFLINK_COMPANY_ID=${LEAFLINK_COMPANY_ID}',
             # Warehouse Configuration
             f'ACTIVE_WAREHOUSE={warehouse}',
             'DATABASE_HOST=${DATABASE_HOST}',

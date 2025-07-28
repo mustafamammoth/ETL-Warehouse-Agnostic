@@ -1,0 +1,294 @@
+# leaflink.yml - LeafLink configuration for production reliability
+
+dag:
+  dag_id: "leaflink_extract_transform"
+  description: "Extract from LeafLink API and transform with dbt (incremental, production-ready)"
+  owner: "data-team"
+  schedule:
+    type: "daily"        # Daily runs to capture order changes
+    time: "04:00"        # 4 AM UTC (offset from Repsly to avoid resource conflicts)
+    timezone: "UTC"
+  max_active_runs: 1     # CRITICAL: Prevent concurrent runs
+  start_date: "2025-07-18"
+  retries: 1             # Reduced retries to prevent state corruption
+  retry_delay_minutes: 10
+  email_on_failure: true
+  email_on_retry: false
+  email_on_success: true
+  tags:
+    - "leaflink"
+    - "extract"
+    - "transform"
+    - "dbt"
+    - "incremental"
+    - "production"
+    - "orders"
+
+notifications:
+  email:
+    failure_recipients:
+      - "mustafa.zaki@mammoth.org"
+    success_recipients:
+      - "mustafa.zaki@mammoth.org"
+    retry_recipients:
+      - "mustafa.zaki@mammoth.org"
+
+api:
+  base_url: "https://app.leaflink.com/api/v2"
+  # Company ID is now set via environment variable: LEAFLINK_COMPANY_ID
+  # This allows for better security and environment-specific configuration
+  rate_limiting:
+    requests_per_second: 10        # LeafLink typically allows higher rates than Repsly
+    max_retries: 3
+    backoff_factor: 2.0
+    timeout_seconds: 60
+
+extraction:
+  mode: "production"  # Changed from testing to production
+  incremental:
+    enabled: true
+    lookback_minutes: 30           # More overlap to prevent gaps
+    full_refresh_days: 90          # Trigger full refresh every 90 days
+    state_path: "/opt/airflow/state/leaflink_watermarks.json"
+
+    initial_extraction:
+      # Set this to when you want data extraction to start from
+      start_date: "2025-05-01"  # 🎯 CHANGE THIS DATE to your desired start
+      
+      # Reset watermarks on next run (set to true once, then back to false)
+      reset_watermarks: false  # 🔥 Set to true for ONE run to reset state
+      
+      # Backfill strategy for large date ranges
+      backfill_strategy: "chunked"  # chunk large date ranges
+      backfill_chunk_days: 30       # process 30 days at a time
+
+  testing:
+    max_records_per_endpoint: 100
+    date_range_days: 7             # Reduced for faster testing
+  production:
+    max_records_per_endpoint: null # No limit in production
+    date_range_days: 365           # Full year for initial load
+  paths:
+    raw_data_directory: "/opt/airflow/data/raw/leaflink"
+
+  endpoints:
+    # CORE: Orders and related data are the primary business data
+    always_extract:
+      - "orders_received"    # Primary endpoint - all received orders
+      - "order_payments"     # Payment information for orders
+    
+    # Optional endpoints (for future expansion)
+    optional_extract:
+      # - "orders_sent"     # Orders we've sent to others
+      # - "products"        # Product catalog
+      # - "companies"       # Company information
+      # - "brands"          # Brand information
+      # - "customers"       # Customer information
+      # - "sales_reps"      # Sales representative data
+      # - "event_logs"      # Order event logs/history
+    
+    # Disabled endpoints (known issues or not needed currently)
+    disabled:
+      # Add endpoints here that cause issues
+      
+    # Endpoint dependencies and priorities
+    dependencies:
+      order_payments:
+        depends_on: ["orders_received"]
+        priority: "medium"
+      # Future dependencies:
+      # event_logs:
+      #   depends_on: ["orders_received"]
+      #   priority: "low"
+
+warehouse:
+  active_warehouse: "clickhouse"
+  schemas:
+    bronze_schema: "bronze_leaflink"
+    silver_schema: "silver_leaflink"
+    raw_schema: "bronze_leaflink"      # Alias for compatibility
+    staging_schema: "silver_leaflink"  # Alias for compatibility
+  
+  # Warehouse-specific settings
+  clickhouse:
+    chunk_size: 1000               # Batch size for large inserts
+    connection_pool_size: 5
+    max_retries: 3
+    partition_strategy: "by_date"   # Partition tables by extraction date
+
+dbt:
+  project_dir: "/opt/airflow/dbt"
+  profiles_dir: "/opt/airflow/dbt"
+  execution:
+    fail_fast: true               # Fail fast to catch issues early
+    full_refresh: false
+    threads: 2                    # Conservative threading
+
+# Data quality settings
+data_quality:
+  enabled: true
+  validation:
+    # Record count validation
+    record_count:
+      enabled: true
+      tolerance_percent: 5        # Allow 5% variance
+    
+    # Duplicate detection
+    duplicate_check:
+      enabled: true
+      critical_endpoints: ["orders_received"]
+      
+    # Null value checks  
+    null_checks:
+      enabled: true
+      critical_fields:
+        orders_received: ["number", "buyer", "seller", "status"]
+      max_null_percent: 10        # Fail if >10% nulls
+    
+    # Data freshness
+    freshness:
+      enabled: true
+      max_age_hours: 26          # Data must be <26 hours old
+      
+    # Business logic validation
+    business_rules:
+      enabled: true
+      valid_order_statuses: ["draft", "submitted", "accepted", "backorder", "fulfilled", "shipped", "complete", "rejected", "combined", "cancelled"]
+      valid_date_range_years: 2   # Orders within 2 years
+
+# Feature flags for controlled rollout
+features:
+  enable_parallel_extraction: false      # DISABLED: Sequential for reliability
+  enable_data_lineage_tracking: false
+  enable_advanced_monitoring: true       # ENABLED: Better observability
+  enable_auto_recovery: false            # DISABLED: Manual intervention preferred
+  
+  # Experimental features
+  experimental:
+    use_chunked_warehouse_loading: true   # ENABLED: Handle large datasets
+    enable_smart_scheduling: false
+    use_enhanced_error_handling: true     # ENABLED: Better error recovery
+    enable_state_validation: true        # ENABLED: Validate state file integrity
+
+# Maintenance and monitoring
+maintenance:
+  cleanup:
+    delete_old_csv_files: true
+    csv_retention_days: 3             # Less storage usage
+    
+    delete_old_logs: true
+    log_retention_days: 14            # 2 weeks
+    
+  health_checks:
+    verify_endpoints_accessible: true
+    check_warehouse_connectivity: true
+    validate_dbt_compilation: true
+    check_state_file_integrity: true   # Verify state file health
+    
+  monitoring:
+    send_daily_health_report: true
+    alert_on_data_quality_issues: true
+    alert_on_extraction_failures: true
+    warehouse_health_check_enabled: true
+
+# LeafLink-specific configurations
+leaflink_specific:
+  # API-specific settings
+  api_settings:
+    # Default parameters for all requests
+    default_fields_add: ["created_by", "last_changed_by"]
+    default_include_children: ["line_items", "customer", "sales_reps"]
+    
+    # Pagination safety
+    max_pages_per_endpoint: 1000      # Prevent infinite pagination
+    max_offset: 50000                 # Maximum offset to prevent API errors
+    
+  # Orders-specific settings
+  orders_received:
+    # Date range handling
+    max_initial_range_days: 90        # Limit initial full refresh
+    incremental_field: "modified"     # Field to use for incremental extraction
+    
+    # Include related data
+    include_line_items: true
+    include_customer_details: true
+    include_sales_rep_info: true
+    
+    # Business logic
+    track_status_changes: true        # Monitor order status transitions
+    alert_on_high_value_orders: true  # Alert for orders above threshold
+    high_value_threshold: 10000       # Dollar amount for alerts
+    
+  # Error handling and recovery
+  error_handling:
+    max_consecutive_failures: 3
+    failure_backoff_minutes: 60      # Conservative backoff
+    skip_endpoint_on_repeated_failure: true
+    
+    # API-specific error recovery
+    api_error_recovery:
+      retry_on_timeout: true
+      retry_on_rate_limit: true
+      retry_on_server_error: true
+      max_retries_per_endpoint: 3
+      
+    # State management safety
+    state_management:
+      backup_state_before_run: true
+      validate_state_after_update: true
+      rollback_on_warehouse_failure: true
+
+# Performance and reliability settings  
+performance:
+  memory_management:
+    max_dataframe_size_mb: 500        # Limit DataFrame memory usage
+    enable_chunked_processing: true
+    chunk_size_rows: 1000
+    
+  connection_management:
+    connection_timeout_seconds: 60
+    max_connection_retries: 3
+    connection_pool_enabled: true
+    
+  # Monitoring and alerting
+  monitoring:
+    log_memory_usage: true
+    log_processing_times: true
+    alert_on_slow_performance: true
+    performance_baseline_minutes: 20  # Alert if pipeline takes >20min
+
+# Security and compliance
+security:
+  data_privacy:
+    log_sensitive_fields: false       # Don't log PII in logs
+    mask_credentials: true            # Mask credentials in logs
+    
+    # LeafLink may contain sensitive business data
+    mask_financial_data: true         # Mask order totals, pricing in logs
+    
+  audit:
+    log_all_api_calls: false         # Performance vs audit trade-off
+    log_data_access: true
+    retention_days: 90
+
+# Business-specific settings
+business_logic:
+  orders:
+    # Order status monitoring
+    critical_statuses: ["submitted", "accepted", "shipped"]
+    alert_statuses: ["rejected", "cancelled"]
+    
+    # Financial thresholds
+    high_value_order_threshold: 5000
+    unusual_discount_threshold: 50    # Alert if discount > 50%
+    
+    # Data quality checks
+    required_fields: ["number", "buyer", "seller", "status", "total"]
+    validate_order_totals: true       # Ensure line items sum to total
+    check_future_dates: true          # Flag orders with future dates
+    
+  customers:
+    # Customer data quality
+    validate_customer_ids: true
+    check_duplicate_customers: true
+    monitor_delinquent_accounts: true
