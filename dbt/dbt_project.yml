@@ -1,4 +1,4 @@
-name: "acumatica_data_platform"
+name: "data_platform"
 version: "1.0.0"
 config-version: 2
 
@@ -23,7 +23,7 @@ vars:
 
 # Model configuration --------------------------------------------------------
 models:
-  acumatica_data_platform:
+  data_platform:
 
     # ────────────────────  BRONZE (raw)  ────────────────────
     raw:

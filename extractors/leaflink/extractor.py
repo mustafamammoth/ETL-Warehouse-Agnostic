@@ -1,4 +1,4 @@
-# extractor.py - LeafLink API extractor with incremental logic
+# extractor.py - LeafLink API extractor with incremental logic and schema evolution support
 # Path: root/extractors/leaflink/extractor.py
 
 from datetime import datetime, timedelta, timezone
@@ -25,6 +25,9 @@ MAX_RECORDS_PER_ENDPOINT: Optional[int] = None
 ENDPOINTS_CONFIG: Dict[str, Dict[str, Any]] = {}
 ENABLED_ENDPOINTS: Dict[str, str] = {}
 
+# GLOBAL REFERENCE DATA REFRESH INTERVAL (in hours)
+REFERENCE_DATA_REFRESH_HOURS = 24  # Change this value to adjust refresh frequency for all reference data
+
 # ---------------- THREAD-SAFE STATE MANAGEMENT ---------------- #
 _STATE_CACHE: Dict[str, str] = {}
 _STATE_LOCK = threading.Lock()
@@ -36,8 +39,9 @@ _SESSION_CACHE = None
 def _utc_now():
     return datetime.utcnow().replace(tzinfo=timezone.utc)
 
-# ---------------- ENDPOINT DEFINITIONS ---------------- #
+# ---------------- ENDPOINT DEFINITIONS (FIXED WITH PROPER INCREMENTAL LOGIC) ---------------- #
 LEAFLINK_ENDPOINTS = {
+    # ========== ORDER-RELATED ENDPOINTS ========== #
     'orders_received': {
         'path': 'orders-received',
         'pagination_type': 'offset_limit',
@@ -45,15 +49,412 @@ LEAFLINK_ENDPOINTS = {
         'data_field': 'results',
         'total_count_field': 'count',
         'next_field': 'next',
-        'incremental_field': 'modified',  # Use modified field for incremental
+        'incremental_field': 'modified',  # CONFIRMED: API supports modified filters
         'priority': 'high',
-        'supports_company_scope': True,  # This endpoint can be scoped to specific companies
+        'supports_company_scope': True,
         'date_filters': {
-            'modified__gte': 'incremental_start',  # Filter for incremental extraction
-            'modified__lte': 'incremental_end'
+            'modified__gte': 'incremental_start',  # CORRECT: API parameter exists
+            'modified__lte': 'incremental_end'     # CORRECT: API parameter exists
         },
-        'include_children': ['line_items', 'customer', 'sales_reps'],  # Include related data
-        'fields_add': ['created_by', 'last_changed_by']  # Additional fields
+        'include_children': ['line_items', 'customer', 'sales_reps'],
+        'fields_add': ['created_by', 'last_changed_by']
+    },
+    
+    'order_sales_reps': {
+        'path': 'order-sales-reps',
+        'pagination_type': 'offset_limit',
+        'limit': 100,
+        'data_field': 'results',
+        'total_count_field': 'count',
+        'next_field': 'next',
+        'incremental_field': None,  # FIXED: No date filters available, use offset-based incremental
+        'incremental_strategy': 'offset_based',  # NEW: Use offset-based incremental for sub-endpoints
+        'priority': 'high',
+        'supports_company_scope': False,
+        'date_filters': {},  # FIXED: No date filters available
+        'depends_on': ['orders_received']
+    },
+    
+    'order_payments': {
+        'path': 'order-payments',
+        'pagination_type': 'offset_limit',
+        'limit': 100,
+        'data_field': 'results',
+        'total_count_field': 'count',
+        'next_field': 'next',
+        'incremental_field': None,  # FIXED: No date filters available
+        'incremental_strategy': 'offset_based',  # NEW: Use offset-based incremental
+        'priority': 'high',
+        'supports_company_scope': False,
+        'date_filters': {},  # FIXED: No date filters available
+        'depends_on': ['orders_received'],
+        'include_children': [],
+        'fields_add': ['recorded_by', 'recorder_name']
+    },
+    
+    'order_event_logs': {
+        'path': 'order-event-logs',
+        'pagination_type': 'offset_limit',
+        'limit': 100,
+        'data_field': 'results',
+        'total_count_field': 'count',
+        'next_field': 'next',
+        'incremental_field': None,  # FIXED: No date filters available
+        'incremental_strategy': 'offset_based',  # NEW: Use offset-based incremental
+        'priority': 'high',
+        'supports_company_scope': False,
+        'date_filters': {},  # FIXED: No date filters available
+        'depends_on': ['orders_received'],
+        'include_children': [],
+        'fields_add': ['author_name', 'event_type', 'source']
+    },
+    
+    'line_items': {
+        'path': 'line-items',
+        'pagination_type': 'offset_limit',
+        'limit': 100,
+        'data_field': 'results',
+        'total_count_field': 'count',
+        'next_field': 'next',
+        'incremental_field': None,  # FIXED: API doesn't actually support order__modified filters
+        'incremental_strategy': 'offset_based',  # FIXED: Use offset-based since date filters don't work
+        'priority': 'high',
+        'supports_company_scope': False,
+        'date_filters': {},  # FIXED: Remove date filters that don't work
+        'depends_on': ['orders_received'],
+        'include_children': ['product', 'batch'],
+        'fields_add': ['unit_multiplier', 'bulk_units', 'frozen_data']
+    },
+    
+    # ========== PRODUCT CATALOG ENDPOINTS ========== #
+    'products': {
+        'path': 'products',
+        'pagination_type': 'offset_limit',
+        'limit': 100,
+        'data_field': 'results',
+        'total_count_field': 'count',
+        'next_field': 'next',
+        'incremental_field': 'modified',  # CONFIRMED: API supports modified filters
+        'priority': 'high',
+        'supports_company_scope': False,
+        'date_filters': {
+            'modified__gte': 'incremental_start',  # CORRECT: API parameter exists
+            'modified__lte': 'incremental_end'     # CORRECT: API parameter exists
+        },
+        'include_children': [],
+        'fields_add': []
+    },
+    
+    'product_categories': {
+        'path': 'product-categories',
+        'pagination_type': 'offset_limit',
+        'limit': 200,
+        'data_field': 'results',
+        'total_count_field': 'count',
+        'next_field': 'next',
+        'incremental_field': None,  # Reference data - uses global refresh interval
+        'priority': 'high',
+        'supports_company_scope': False,
+        'date_filters': {},
+        'include_children': [],
+        'fields_add': ['slug', 'description']
+    },
+    
+    'product_subcategories': {
+        'path': 'product-subcategories',
+        'pagination_type': 'offset_limit',
+        'limit': 200,
+        'data_field': 'results',
+        'total_count_field': 'count',
+        'next_field': 'next',
+        'incremental_field': None,  # Reference data - uses global refresh interval
+        'priority': 'high',
+        'supports_company_scope': False,
+        'date_filters': {},
+        'depends_on': ['product_categories'],
+        'include_children': ['category'],
+        'fields_add': ['slug', 'description']
+    },
+    
+    'product_images': {
+        'path': 'product-images',
+        'pagination_type': 'offset_limit',
+        'limit': 200,
+        'data_field': 'results',
+        'total_count_field': 'count',
+        'next_field': 'next',
+        'incremental_field': None,  # FIXED: No date filters available
+        'incremental_strategy': 'offset_based',  # NEW: Use offset-based incremental
+        'priority': 'high',
+        'supports_company_scope': False,
+        'date_filters': {},
+        'depends_on': ['products'],
+        'include_children': ['product'],
+        'fields_add': ['position']
+    },
+    
+    'product_lines': {
+        'path': 'product-lines',
+        'pagination_type': 'offset_limit',
+        'limit': 200,
+        'data_field': 'results',
+        'total_count_field': 'count',
+        'next_field': 'next',
+        'incremental_field': None,  # Reference data - uses global refresh interval
+        'priority': 'high',
+        'supports_company_scope': False,
+        'date_filters': {},
+        'include_children': ['brand'],
+        'fields_add': ['menu_position']
+    },
+    
+    'strains': {
+        'path': 'strains',
+        'pagination_type': 'offset_limit',
+        'limit': 200,
+        'data_field': 'results',
+        'total_count_field': 'count',
+        'next_field': 'next',
+        'incremental_field': None,  # Reference data - uses global refresh interval
+        'priority': 'high',
+        'supports_company_scope': False,
+        'date_filters': {},
+        'include_children': ['parents', 'company'],
+        'fields_add': ['strain_classification']
+    },
+    
+    # ========== BATCH-RELATED ENDPOINTS ========== #
+    'product_batches': {
+        'path': 'product-batches',
+        'pagination_type': 'offset_limit',
+        'limit': 200,
+        'data_field': 'results',
+        'total_count_field': 'count',
+        'next_field': 'next',
+        'incremental_field': None,  # FIXED: No date filters available
+        'incremental_strategy': 'offset_based',  # NEW: Use offset-based incremental
+        'priority': 'high',
+        'supports_company_scope': False,
+        'date_filters': {},
+        'depends_on': ['products'],
+        'include_children': ['product'],
+        'fields_add': []
+    },
+    
+    'batch_documents': {
+        'path': 'batch-documents',
+        'pagination_type': 'offset_limit',
+        'limit': 200,
+        'data_field': 'results',
+        'total_count_field': 'count',
+        'next_field': 'next',
+        'incremental_field': None,  # FIXED: API docs don't show date filters
+        'incremental_strategy': 'offset_based',  # NEW: Use offset-based incremental
+        'priority': 'high',
+        'supports_company_scope': False,
+        'date_filters': {},
+        'depends_on': ['product_batches'],
+        'include_children': ['batch'],
+        'fields_add': ['created_on', 'summary', 'document']
+    },
+    
+    # ========== CRM-RELATED ENDPOINTS ========== #
+    'customers': {
+        'path': 'customers',
+        'pagination_type': 'offset_limit',
+        'limit': 100,
+        'data_field': 'results',
+        'total_count_field': 'count',
+        'next_field': 'next',
+        'incremental_field': 'modified',  # CONFIRMED: API supports modified filters
+        'priority': 'high',
+        'supports_company_scope': False,
+        'date_filters': {
+            'modified__gte': 'incremental_start',  # CORRECT: API parameter exists
+            'modified__lte': 'incremental_end'     # CORRECT: API parameter exists
+        },
+        'include_children': ['tags', 'service_zone', 'managers', 'contacts', 'license_type'],
+        'fields_add': []
+    },
+    
+    'contacts': {
+        'path': 'contacts',
+        'pagination_type': 'offset_limit',
+        'limit': 100,
+        'data_field': 'results',
+        'total_count_field': 'count',
+        'next_field': 'next',
+        'incremental_field': 'modified',  # CONFIRMED: API supports modified filters
+        'priority': 'high',
+        'supports_company_scope': False,
+        'date_filters': {
+            'modified__gte': 'incremental_start',  # CORRECT: API parameter exists
+            'modified__lte': 'incremental_end'     # CORRECT: API parameter exists
+        },
+        'include_children': [],
+        'fields_add': []
+    },
+    
+    'activity_entries': {
+        'path': 'activity-entries',
+        'pagination_type': 'offset_limit',
+        'limit': 100,
+        'data_field': 'results',
+        'total_count_field': 'count',
+        'next_field': 'next',
+        'incremental_field': 'modified',  # CONFIRMED: API supports modified filters
+        'priority': 'medium',
+        'supports_company_scope': False,
+        'date_filters': {
+            'modified__gte': 'incremental_start',  # CORRECT: API parameter exists
+            'modified__lte': 'incremental_end'     # CORRECT: API parameter exists
+        },
+        'depends_on': ['customers', 'contacts'],
+        'include_children': [],
+        'fields_add': []
+    },
+    
+    'customer_status': {
+        'path': 'customer-statuses',  # FIXED: Should be plural
+        'pagination_type': 'offset_limit',
+        'limit': 200,
+        'data_field': 'results',
+        'total_count_field': 'count',
+        'next_field': 'next',
+        'incremental_field': None,  # Reference data - uses global refresh interval
+        'priority': 'low',
+        'supports_company_scope': False,
+        'date_filters': {},
+        'include_children': [],
+        'fields_add': []
+    },
+    
+    'customer_tiers': {
+        'path': 'customer-tiers',
+        'pagination_type': 'offset_limit',
+        'limit': 200,
+        'data_field': 'results',
+        'total_count_field': 'count',
+        'next_field': 'next',
+        'incremental_field': None,  # Reference data - uses global refresh interval
+        'priority': 'low',
+        'supports_company_scope': False,
+        'date_filters': {},
+        'include_children': [],
+        'fields_add': []
+    },
+    
+    # ========== COMPANY & OPERATIONAL ENDPOINTS ========== #
+    'companies': {
+        'path': 'companies',
+        'pagination_type': 'offset_limit',
+        'limit': 100,
+        'data_field': 'results',
+        'total_count_field': 'count',
+        'next_field': 'next',
+        'incremental_field': None,  # Reference data - company info rarely changes
+        'priority': 'high',
+        'supports_company_scope': False,
+        'date_filters': {},
+        'include_children': [],
+        'fields_add': []
+    },
+    
+    'company_staff': {
+        'path': 'company-staff',
+        'pagination_type': 'offset_limit',
+        'limit': 100,
+        'data_field': 'results',
+        'total_count_field': 'count',
+        'next_field': 'next',
+        'incremental_field': None,  # Staff changes infrequently
+        'priority': 'medium',
+        'supports_company_scope': False,
+        'date_filters': {},
+        'depends_on': ['companies'],
+        'include_children': [],
+        'fields_add': []
+    },
+    
+    'licenses': {
+        'path': 'licenses',
+        'pagination_type': 'offset_limit',
+        'limit': 100,
+        'data_field': 'results',
+        'total_count_field': 'count',
+        'next_field': 'next',
+        'incremental_field': None,  # License info changes infrequently
+        'priority': 'medium',
+        'supports_company_scope': False,
+        'date_filters': {},
+        'depends_on': ['companies'],
+        'include_children': [],
+        'fields_add': []
+    },
+    
+    'license_types': {
+        'path': 'license-types',
+        'pagination_type': 'offset_limit',
+        'limit': 200,
+        'data_field': 'results',
+        'total_count_field': 'count',
+        'next_field': 'next',
+        'incremental_field': None,  # Reference data - uses global refresh interval
+        'priority': 'low',
+        'supports_company_scope': False,
+        'date_filters': {},
+        'include_children': [],
+        'fields_add': []
+    },
+    
+    'brands': {
+        'path': 'brands',
+        'pagination_type': 'offset_limit',
+        'limit': 100,
+        'data_field': 'results',
+        'total_count_field': 'count',
+        'next_field': 'next',
+        'incremental_field': None,  # Brand info changes infrequently
+        'priority': 'medium',
+        'supports_company_scope': False,
+        'date_filters': {},
+        'depends_on': ['companies'],
+        'include_children': [],
+        'fields_add': []
+    },
+    
+    'promocodes': {
+        'path': 'promocodes',
+        'pagination_type': 'offset_limit',
+        'limit': 100,
+        'data_field': 'results',
+        'total_count_field': 'count',
+        'next_field': 'next',
+        'incremental_field': None,  # Promocodes change occasionally but no date filters available
+        'incremental_strategy': 'offset_based',  # Use offset-based for moderate frequency changes
+        'priority': 'medium',
+        'supports_company_scope': False,
+        'date_filters': {},
+        'depends_on': ['brands'],
+        'include_children': [],
+        'fields_add': []
+    },
+    
+    'reports': {
+        'path': 'reports',
+        'pagination_type': 'offset_limit',
+        'limit': 100,
+        'data_field': 'results',
+        'total_count_field': 'count',
+        'next_field': 'next',
+        'incremental_field': None,  # Reports are generated periodically
+        'incremental_strategy': 'offset_based',  # Use offset-based for new reports
+        'priority': 'low',
+        'supports_company_scope': False,
+        'date_filters': {},
+        'depends_on': ['companies'],
+        'include_children': [],
+        'fields_add': []
     }
 }
 
@@ -113,7 +514,7 @@ def create_authenticated_session():
     # Create session with API key authentication
     session = requests.Session()
     
-    # LeafLink uses App {API_KEY} format
+    # LeafLink uses Token {API_KEY} format
     session.headers.update({
         'Authorization': f'Token {api_key}',
         'Accept': 'application/json',
@@ -154,8 +555,9 @@ def create_authenticated_session():
         raise
 
 # ---------------- UTILITIES ---------------- #
+
 def flatten_leaflink_record(record: Dict[str, Any]) -> Dict[str, Any]:
-    """Flatten LeafLink record structure with special handling for nested objects."""
+    """Flatten LeafLink record structure with special handling for nested objects and enhanced JSON flattening."""
     flattened = {}
     
     if isinstance(record, dict):
@@ -163,33 +565,140 @@ def flatten_leaflink_record(record: Dict[str, Any]) -> Dict[str, Any]:
             if isinstance(value, dict):
                 # Special handling for common LeafLink nested structures
                 if key == 'total' and 'amount' in value:
-                    # Handle total: {"amount": 450.0, "currency": "USD"}
                     flattened['total_amount'] = value.get('amount')
                     flattened['total_currency'] = value.get('currency')
                 elif key == 'shipping_charge' and 'amount' in value:
-                    # Handle shipping_charge: {"amount": 0.0, "currency": "USD"}
                     flattened['shipping_charge_amount'] = value.get('amount')
                     flattened['shipping_charge_currency'] = value.get('currency')
                 elif key == 'customer' and isinstance(value, dict):
-                    # Handle customer: {"id": 123, "display_name": "Name", ...}
                     for nested_key, nested_value in value.items():
                         flattened[f"customer_{nested_key}"] = nested_value
-                elif key in ['ordered_unit_price', 'sale_price'] and 'amount' in value:
-                    # Handle price objects in line items
+                elif key in ['ordered_unit_price', 'sale_price', 'wholesale_price', 'retail_price', 'price_schedule_price'] and 'amount' in value:
                     flattened[f"{key}_amount"] = value.get('amount')
                     flattened[f"{key}_currency"] = value.get('currency')
+                elif key == 'unit_denomination' and isinstance(value, dict):
+                    for nested_key, nested_value in value.items():
+                        flattened[f"unit_denomination_{nested_key}"] = nested_value
+                elif key == 'license' and isinstance(value, dict):
+                    for nested_key, nested_value in value.items():
+                        flattened[f"license_{nested_key}"] = nested_value
+                elif key == 'external_ids' and isinstance(value, dict):
+                    if value:
+                        flattened['external_ids_json'] = json.dumps(value)
+                    else:
+                        flattened['external_ids_json'] = None
+                elif key == 'changed_fields' and isinstance(value, dict):
+                    flattened['changed_fields_json'] = json.dumps(value) if value else None
+                elif key == 'frozen_data' and isinstance(value, dict):
+                    flattened['frozen_data_json'] = json.dumps(value) if value else None
+                # NEW: Enhanced address flattening for orders_received
+                elif key in ['customer_corporate_address', 'customer_delivery_address'] and isinstance(value, dict):
+                    for addr_key, addr_value in value.items():
+                        flattened[f"{key}_{addr_key}"] = addr_value
+                    # Keep original JSON for backward compatibility
+                    flattened[f"{key}_json"] = json.dumps(value) if value else None
+                # NEW: Enhanced payment method/term flattening for orders_received
+                elif key in ['selected_payment_option_payment_method', 'selected_payment_option_payment_term'] and isinstance(value, dict):
+                    for payment_key, payment_value in value.items():
+                        flattened[f"{key}_{payment_key}"] = payment_value
+                    # Keep original JSON for backward compatibility
+                    flattened[f"{key}_json"] = json.dumps(value) if value else None
                 else:
-                    # Standard nested object flattening
                     for nested_key, nested_value in value.items():
                         flattened[f"{key}_{nested_key}"] = nested_value
             elif isinstance(value, list):
-                # Handle arrays - convert to JSON strings or flatten if simple
-                if value and all(isinstance(item, dict) for item in value):
-                    # Complex objects - store as JSON
-                    flattened[key] = json.dumps(value) if value else None
+                if key == 'strains' and value:
+                    flattened['strains_json'] = json.dumps(value)
+                    flattened['strains_count'] = len(value)
+                elif key == 'parents' and value:
+                    flattened['parents_json'] = json.dumps(value)
+                    flattened['parents_count'] = len(value)
+                elif key == 'product_data_items' and value:
+                    flattened['product_data_items_json'] = json.dumps(value)
+                    flattened['product_data_items_count'] = len(value)
+                elif key == 'brand_ids' and value:
+                    flattened['brand_ids_json'] = json.dumps(value)
+                    flattened['brand_ids_count'] = len(value)
+                elif key == 'package_tags' and value:
+                    flattened['package_tags_json'] = json.dumps(value)
+                    flattened['package_tags_count'] = len(value)
+                # NEW: Enhanced array flattening for specific columns
+                elif key == 'managers' and value:
+                    flattened['managers_json'] = json.dumps(value)
+                    flattened['managers_count'] = len(value)
+                    # Extract key fields from first manager for easier querying
+                    if value and isinstance(value[0], dict):
+                        first_manager = value[0]
+                        flattened['primary_manager_id'] = first_manager.get('id')
+                        flattened['primary_manager_email'] = first_manager.get('email')
+                        flattened['primary_manager_phone'] = first_manager.get('phone')
+                        flattened['primary_manager_position'] = first_manager.get('position')
+                elif key == 'tags' and value:
+                    flattened['tags_json'] = json.dumps(value)
+                    flattened['tags_count'] = len(value)
+                    # Extract tag names for easier filtering
+                    if value and all(isinstance(tag, dict) and 'name' in tag for tag in value):
+                        tag_names = [tag['name'] for tag in value]
+                        flattened['tag_names'] = '|'.join(tag_names)  # Pipe-separated for easy filtering
+                elif key == 'contacts' and value:
+                    flattened['contacts_json'] = json.dumps(value)
+                    flattened['contacts_count'] = len(value)
+                    # Extract primary contact info
+                    primary_contact = next((c for c in value if c.get('is_primary')), value[0] if value else None)
+                    if primary_contact and isinstance(primary_contact, dict):
+                        flattened['primary_contact_id'] = primary_contact.get('id')
+                        flattened['primary_contact_first_name'] = primary_contact.get('first_name')
+                        flattened['primary_contact_last_name'] = primary_contact.get('last_name')
+                        flattened['primary_contact_email'] = primary_contact.get('email')
+                        flattened['primary_contact_phone'] = primary_contact.get('phone')
+                        flattened['primary_contact_role'] = primary_contact.get('role')
+                elif key == 'sales_reps' and value:
+                    flattened['sales_reps_json'] = json.dumps(value)
+                    flattened['sales_reps_count'] = len(value)
+                    # Extract primary sales rep info
+                    if value and isinstance(value[0], dict):
+                        first_rep = value[0]
+                        flattened['primary_sales_rep_id'] = first_rep.get('id')
+                        flattened['primary_sales_rep_email'] = first_rep.get('email')
+                        flattened['primary_sales_rep_phone'] = first_rep.get('phone')
+                        flattened['primary_sales_rep_position'] = first_rep.get('position')
+                elif key == 'order_taxes' and value:
+                    flattened['order_taxes_json'] = json.dumps(value)
+                    flattened['order_taxes_count'] = len(value)
+                    # Calculate total tax amount
+                    if value and all(isinstance(tax, dict) for tax in value):
+                        tax_names = [tax.get('name', '') for tax in value]
+                        flattened['tax_names'] = '|'.join(filter(None, tax_names))
+                elif key == 'customer_available_payment_options' and value:
+                    flattened['available_options_json'] = json.dumps(value)
+                    flattened['available_options_count'] = len(value)
+                    # Extract default payment option info
+                    default_option = next((opt for opt in value if opt.get('is_default')), value[0] if value else None)
+                    if default_option and isinstance(default_option, dict):
+                        payment_method = default_option.get('payment_method', {})
+                        payment_term = default_option.get('payment_term', {})
+                        flattened['default_payment_method_id'] = payment_method.get('id') if payment_method else None
+                        flattened['default_payment_method'] = payment_method.get('method') if payment_method else None
+                        flattened['default_payment_term_id'] = payment_term.get('id') if payment_term else None
+                        flattened['default_payment_term'] = payment_term.get('term') if payment_term else None
+                        flattened['default_payment_term_days'] = payment_term.get('days') if payment_term else None
+                # NEW: Enhanced frozen_data handling for line_items
+                elif key == 'frozen_data' and value and isinstance(value, dict):
+                    flattened['frozen_data_json'] = json.dumps(value)
+                    # Extract product info from frozen_data if it exists
+                    if 'product' in value and isinstance(value['product'], dict):
+                        product_data = value['product']
+                        for prod_key, prod_value in product_data.items():
+                            flattened[f"frozen_product_{prod_key}"] = prod_value
+                elif value and all(isinstance(item, dict) for item in value):
+                    flattened[f"{key}_json"] = json.dumps(value)
+                    flattened[f"{key}_count"] = len(value)
+                elif value:
+                    flattened[f"{key}_json"] = json.dumps(value)
+                    flattened[f"{key}_count"] = len(value)
                 else:
-                    # Simple arrays - join or store as JSON
-                    flattened[key] = json.dumps(value) if value else None
+                    flattened[f"{key}_json"] = None
+                    flattened[f"{key}_count"] = 0
             else:
                 flattened[key] = value
     else:
@@ -199,21 +708,17 @@ def flatten_leaflink_record(record: Dict[str, Any]) -> Dict[str, Any]:
 
 def smart_rate_limit(response, config):
     """Smart rate limiting based on response headers and status."""
-    # Check for rate limit headers (LeafLink specific)
     remaining = response.headers.get('X-RateLimit-Remaining')
     reset_time = response.headers.get('X-RateLimit-Reset')
     
     if remaining and int(remaining) < 5:
-        # Near rate limit, slow down
         time.sleep(2.0)
         logger.info("⏳ Near rate limit, slowing down")
     elif response.status_code == 429:
-        # Hit rate limit, wait longer
         wait_time = int(reset_time) if reset_time else 60
         logger.warning(f"⏸️ Rate limited, waiting {wait_time}s")
         time.sleep(wait_time)
     else:
-        # Normal rate limiting
         time.sleep(1.0 / config['api']['rate_limiting']['requests_per_second'])
 
 # ---------------- THREAD-SAFE INCREMENTAL STATE MANAGEMENT ---------------- #
@@ -232,7 +737,7 @@ def _ensure_state_dir():
     _STATE_DIR_CREATED = True
 
 def _load_state():
-    """Load watermark state JSON (endpoint -> ISO timestamp) - THREAD SAFE."""
+    """Load watermark state JSON (endpoint -> ISO timestamp or offset) - THREAD SAFE."""
     global _STATE_CACHE
     
     with _STATE_LOCK:
@@ -273,19 +778,16 @@ def _save_state():
         temp_path = f"{path}.tmp"
         
         try:
-            # Create checksum for verification
             state_json = json.dumps(_STATE_CACHE, indent=2, sort_keys=True)
             checksum = hashlib.md5(state_json.encode()).hexdigest()
             
             logger.info(f"💾 Saving state to {path}: {_STATE_CACHE}")
             
-            # Atomic write: write to temp file first
             with open(temp_path, 'w') as f:
                 f.write(state_json)
                 f.flush()
                 os.fsync(f.fileno())
             
-            # Verify temp file
             with open(temp_path, 'r') as f:
                 verify_content = f.read()
                 verify_checksum = hashlib.md5(verify_content.encode()).hexdigest()
@@ -293,8 +795,7 @@ def _save_state():
             if verify_checksum != checksum:
                 raise ValueError("State file verification failed - checksum mismatch")
             
-            # Atomic move
-            if os.name == 'nt':  # Windows
+            if os.name == 'nt':
                 if os.path.exists(path):
                     os.remove(path)
             os.rename(temp_path, path)
@@ -316,13 +817,37 @@ def _get_last_watermark(endpoint_key: str) -> Optional[datetime]:
         iso = _STATE_CACHE.get(endpoint_key)
         if not iso:
             return None
+        
+        # Handle both datetime watermarks and offset watermarks
+        if isinstance(iso, str) and iso.startswith('offset:'):
+            return None  # Offset watermarks don't convert to datetime
+        
         try:
-            if iso.endswith('Z'):
-                iso = iso.replace('Z', '+00:00')
-            return datetime.fromisoformat(iso)
+            if isinstance(iso, str):
+                if iso.endswith('Z'):
+                    iso = iso.replace('Z', '+00:00')
+                return datetime.fromisoformat(iso)
+            else:
+                return None
         except Exception as e:
             logger.warning(f"⚠️ Invalid watermark format for {endpoint_key}: {iso}")
             return None
+
+def _get_last_offset(endpoint_key: str) -> Optional[int]:
+    """Get last offset for offset-based incremental endpoints - THREAD SAFE."""
+    with _STATE_LOCK:
+        value = _STATE_CACHE.get(endpoint_key)
+        if not value:
+            return None
+        
+        if isinstance(value, str) and value.startswith('offset:'):
+            try:
+                return int(value.split(':', 1)[1])
+            except (ValueError, IndexError):
+                logger.warning(f"⚠️ Invalid offset format for {endpoint_key}: {value}")
+                return None
+        
+        return None
 
 def _update_watermark(endpoint_key: str, new_ts: datetime):
     """Update watermark for endpoint - THREAD SAFE, NOT SAVED YET."""
@@ -331,6 +856,12 @@ def _update_watermark(endpoint_key: str, new_ts: datetime):
             new_ts = new_ts.replace(tzinfo=timezone.utc)
         _STATE_CACHE[endpoint_key] = new_ts.astimezone(timezone.utc).isoformat().replace('+00:00', 'Z')
         logger.info(f"🕒 Updated watermark in memory: {endpoint_key} = {_STATE_CACHE[endpoint_key]}")
+
+def _update_offset(endpoint_key: str, new_offset: int):
+    """Update offset for offset-based incremental endpoints - THREAD SAFE, NOT SAVED YET."""
+    with _STATE_LOCK:
+        _STATE_CACHE[endpoint_key] = f"offset:{new_offset}"
+        logger.info(f"🔢 Updated offset in memory: {endpoint_key} = {new_offset}")
 
 # ---------------- INCREMENTAL HELPERS ---------------- #
 def _parse_leaflink_timestamp(date_str: str) -> Optional[datetime]:
@@ -341,18 +872,14 @@ def _parse_leaflink_timestamp(date_str: str) -> Optional[datetime]:
     try:
         date_str = str(date_str).strip()
         
-        # LeafLink uses ISO format with timezone: "2025-07-28T16:38:46.400810-04:00"
         if 'T' in date_str:
-            # Handle timezone offset formats
             if date_str.endswith('Z'):
                 return datetime.fromisoformat(date_str.replace('Z', '+00:00'))
             elif '+' in date_str[-6:] or '-' in date_str[-6:]:
                 return datetime.fromisoformat(date_str)
             else:
-                # No timezone info, assume UTC
                 return datetime.fromisoformat(date_str + '+00:00')
         
-        # Date only format - assume UTC
         return datetime.strptime(date_str, '%Y-%m-%d').replace(tzinfo=timezone.utc)
         
     except Exception as e:
@@ -373,22 +900,66 @@ def _should_use_incremental(endpoint_key: str) -> bool:
     
     endpoint_config = LEAFLINK_ENDPOINTS.get(endpoint_key, {})
     incremental_field = endpoint_config.get('incremental_field')
+    incremental_strategy = endpoint_config.get('incremental_strategy')
     
-    return incremental_field is not None
+    # Support both date-based and offset-based incremental
+    return incremental_field is not None or incremental_strategy in ['offset_based', 'parent_driven']
 
-def _get_incremental_date_range(endpoint_key: str):
-    """Get date range for incremental extraction with proper timezone handling."""
+def _get_incremental_strategy(endpoint_key: str) -> str:
+    """Get the incremental strategy for an endpoint."""
     endpoint_config = LEAFLINK_ENDPOINTS.get(endpoint_key, {})
     
-    if not _should_use_incremental(endpoint_key):
-        # Default date range for full extraction
-        end_date = _utc_now()
-        if TESTING_MODE:
-            start_date = end_date - timedelta(days=CONFIG['extraction']['testing']['date_range_days'])
-        else:
-            start_date = end_date - timedelta(days=CONFIG['extraction']['production']['date_range_days'])
-        logger.info(f"🔄 Full extraction date range for {endpoint_key}: {start_date.isoformat()} to {end_date.isoformat()}")
-        return start_date, end_date
+    if endpoint_config.get('incremental_field'):
+        return 'date_based'
+    elif endpoint_config.get('incremental_strategy') == 'offset_based':
+        return 'offset_based'
+    elif endpoint_config.get('incremental_strategy') == 'parent_driven':
+        return 'parent_driven'
+    else:
+        return 'full_refresh'
+
+def _should_skip_reference_data_extraction(endpoint_key: str) -> bool:
+    """Check if reference data endpoint should be skipped based on global refresh interval."""
+    endpoint_config = LEAFLINK_ENDPOINTS.get(endpoint_key, {})
+    
+    # Only apply to endpoints without any incremental strategy (pure reference data)
+    if _get_incremental_strategy(endpoint_key) != 'full_refresh':
+        return False
+    
+    # Use global refresh interval for all reference data
+    refresh_interval_hours = REFERENCE_DATA_REFRESH_HOURS
+    
+    # Check when this endpoint was last extracted
+    last_extraction = _get_last_watermark(endpoint_key)
+    if not last_extraction:
+        # Never extracted before, need to extract
+        return False
+    
+    # Calculate if enough time has passed
+    now = _utc_now()
+    time_since_last = now - last_extraction
+    refresh_interval = timedelta(hours=refresh_interval_hours)
+    
+    should_skip = time_since_last < refresh_interval
+    
+    if should_skip:
+        remaining_time = refresh_interval - time_since_last
+        hours_remaining = remaining_time.total_seconds() / 3600
+        logger.info(f"⏭️ Skipping {endpoint_key} - last extracted {time_since_last} ago, refresh interval is {refresh_interval_hours}h (next refresh in {hours_remaining:.1f}h)")
+        return True
+    else:
+        logger.info(f"🔄 {endpoint_key} ready for refresh - last extracted {time_since_last} ago, refresh interval is {refresh_interval_hours}h")
+        return False
+
+def _get_incremental_date_range(endpoint_key: str):
+    """Get date range for incremental extraction with proper timezone handling and start_date support."""
+    endpoint_config = LEAFLINK_ENDPOINTS.get(endpoint_key, {})
+    
+    strategy = _get_incremental_strategy(endpoint_key)
+    
+    if strategy != 'date_based':
+        # For non-date-based strategies, return None to indicate no date filtering
+        return None, None
     
     last_wm = _get_last_watermark(endpoint_key)
     end_date = _utc_now()
@@ -401,16 +972,46 @@ def _get_incremental_date_range(endpoint_key: str):
         start_date = last_wm - timedelta(minutes=lookback)
         logger.info(f"🔁 Incremental extract for {endpoint_key} from {start_date.isoformat()}")
     else:
-        # First run - use default range
-        if TESTING_MODE:
-            start_date = end_date - timedelta(days=CONFIG['extraction']['testing']['date_range_days'])
+        configured_start_date = CONFIG.get('dag', {}).get('start_date')
+        if configured_start_date:
+            try:
+                if isinstance(configured_start_date, str):
+                    start_date = datetime.strptime(configured_start_date, '%Y-%m-%d').replace(tzinfo=timezone.utc)
+                else:
+                    start_date = configured_start_date.replace(tzinfo=timezone.utc)
+                logger.info(f"🗓️ First incremental run using configured start_date for {endpoint_key}: {start_date.isoformat()}")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to parse configured start_date '{configured_start_date}': {e}")
+                if TESTING_MODE:
+                    start_date = end_date - timedelta(days=CONFIG['extraction']['testing']['date_range_days'])
+                else:
+                    start_date = end_date - timedelta(days=CONFIG['extraction']['production']['date_range_days'])
+                logger.info(f"🔄 Fallback to default range for first incremental run of {endpoint_key}")
         else:
-            start_date = end_date - timedelta(days=CONFIG['extraction']['production']['date_range_days'])
-        logger.info(f"🔄 First run for {endpoint_key}, using default range")
+            if TESTING_MODE:
+                start_date = end_date - timedelta(days=CONFIG['extraction']['testing']['date_range_days'])
+            else:
+                start_date = end_date - timedelta(days=CONFIG['extraction']['production']['date_range_days'])
+            logger.info(f"🔄 First incremental run using default range for {endpoint_key}")
     
     return start_date, end_date
 
-# ---------------- WAREHOUSE LOADING FUNCTIONS ---------------- #
+def _get_incremental_offset_range(endpoint_key: str):
+    """Get offset range for offset-based incremental extraction."""
+    last_offset = _get_last_offset(endpoint_key)
+    
+    if last_offset is not None:
+        # Start from where we left off
+        start_offset = last_offset
+        logger.info(f"🔢 Continuing offset-based extraction for {endpoint_key} from offset {start_offset}")
+    else:
+        # First run, start from 0
+        start_offset = 0
+        logger.info(f"🔢 First offset-based extraction for {endpoint_key} starting from offset 0")
+    
+    return start_offset
+
+# ---------------- WAREHOUSE LOADING FUNCTIONS WITH SCHEMA EVOLUTION ---------------- #
 def table_exists(client, full_table):
     """Check if table exists in ClickHouse."""
     try:
@@ -418,6 +1019,35 @@ def table_exists(client, full_table):
         return True
     except Exception:
         return False
+
+def get_table_columns(client, full_table):
+    """Get existing table columns."""
+    try:
+        result = client.query(f"DESCRIBE TABLE {full_table}")
+        return {row[0] for row in result.result_rows}
+    except Exception:
+        return set()
+
+def add_missing_columns(client, full_table, df, existing_columns):
+    """Add missing columns to existing table to support schema evolution."""
+    new_columns = set(df.columns) - existing_columns
+    
+    if not new_columns:
+        return
+    
+    logger.info(f"🔧 Adding {len(new_columns)} new columns to {full_table}: {sorted(new_columns)}")
+    
+    for column in sorted(new_columns):
+        try:
+            alter_sql = f"ALTER TABLE {full_table} ADD COLUMN `{column}` String"
+            client.command(alter_sql)
+            logger.info(f"✅ Added column `{column}` to {full_table}")
+        except Exception as e:
+            if "already exists" in str(e).lower():
+                logger.info(f"ℹ️ Column `{column}` already exists in {full_table}")
+            else:
+                logger.error(f"❌ Failed to add column `{column}` to {full_table}: {e}")
+                raise
 
 def create_table_from_dataframe(client, full_table, df):
     """Create ClickHouse table from DataFrame structure with proper partitioning."""
@@ -438,7 +1068,6 @@ def create_table_from_dataframe(client, full_table, df):
         client.command(create_ddl)
         logger.info(f"🆕 Created partitioned table {full_table}")
         
-        # Verify the table was created with partitions
         verify_query = f"SHOW CREATE TABLE {full_table}"
         result = client.query(verify_query)
         create_statement = result.result_rows[0][0]
@@ -454,12 +1083,11 @@ def create_table_from_dataframe(client, full_table, df):
         raise
 
 def load_dataframe_to_warehouse_verified(df, endpoint_key, extracted_at):
-    """Load DataFrame with comprehensive verification and duplicate prevention."""
+    """Load DataFrame with comprehensive verification, duplicate prevention, and schema evolution support."""
     import clickhouse_connect
     
     raw_schema = CONFIG['warehouse']['schemas']['raw_schema']
     
-    # Connection setup
     host = os.getenv('CLICKHOUSE_HOST')
     port = int(os.getenv('CLICKHOUSE_PORT', 8443))
     database = os.getenv('CLICKHOUSE_DATABASE', 'default')
@@ -475,7 +1103,6 @@ def load_dataframe_to_warehouse_verified(df, endpoint_key, extracted_at):
     )
     
     try:
-        # Ensure schema exists
         if raw_schema != 'default':
             try:
                 client.command(f"CREATE DATABASE IF NOT EXISTS `{raw_schema}`")
@@ -488,7 +1115,6 @@ def load_dataframe_to_warehouse_verified(df, endpoint_key, extracted_at):
         full_table = f"`{raw_schema}`.`{table_name}`"
         extraction_timestamp = extracted_at.isoformat()
         
-        # CRITICAL: Duplicate prevention check
         if table_exists(client, full_table):
             duplicate_check = client.query(f"""
                 SELECT count() 
@@ -504,10 +1130,13 @@ def load_dataframe_to_warehouse_verified(df, endpoint_key, extracted_at):
                 return 0
             
             logger.info(f"✅ No duplicates found for {extraction_timestamp}")
+            
+            existing_columns = get_table_columns(client, full_table)
+            add_missing_columns(client, full_table, df, existing_columns)
+            
         else:
             create_table_from_dataframe(client, full_table, df)
         
-        # Data validation before load
         unique_timestamps = df['_extracted_at'].nunique()
         if unique_timestamps != 1:
             raise ValueError(f"Data integrity error: {unique_timestamps} different timestamps")
@@ -516,15 +1145,12 @@ def load_dataframe_to_warehouse_verified(df, endpoint_key, extracted_at):
         if actual_timestamp != extraction_timestamp:
             raise ValueError(f"Timestamp mismatch: expected {extraction_timestamp}, got {actual_timestamp}")
         
-        # Prepare data
         df_clean = df.copy()
         df_clean.columns = [col.replace(' ', '_').replace('-', '_') for col in df_clean.columns]
         df_str = df_clean.astype(str).replace(['nan', 'None', 'null', '<NA>'], '')
         
-        # Load data
         client.insert_df(table=full_table, df=df_str)
         
-        # CRITICAL: Verify the load
         verification_check = client.query(f"""
             SELECT count() 
             FROM {full_table} 
@@ -545,54 +1171,70 @@ def load_dataframe_to_warehouse_verified(df, endpoint_key, extracted_at):
     finally:
         client.close()
 
-# ---------------- PAGINATION + FETCH WITH ERROR HANDLING ---------------- #
+# ---------------- PAGINATION + FETCH WITH ERROR HANDLING (UPDATED FOR INCREMENTAL STRATEGIES) ---------------- #
 def get_paginated_data(session, endpoint_config, endpoint_name):
-    """Get data from LeafLink endpoint with offset/limit pagination."""
+    """Get data from LeafLink endpoint with proper incremental strategy support."""
     all_data = []
     base_url = CONFIG['api']['base_url']
     max_retries = 3
     
-    # Get company ID from environment variable
     company_id = os.getenv('LEAFLINK_COMPANY_ID')
     
     if company_id and endpoint_config.get('supports_company_scope'):
-        # Company-scoped endpoint
         endpoint_url_base = f"{base_url}/companies/{company_id}/{endpoint_config['path']}/"
         logger.info(f"   Using company-scoped endpoint for company ID: {company_id}")
     else:
-        # Global endpoint
         endpoint_url_base = f"{base_url}/{endpoint_config['path']}/"
         if endpoint_config.get('supports_company_scope'):
             logger.warning("⚠️ Company ID not provided but endpoint supports company scoping")
             logger.warning("   Set LEAFLINK_COMPANY_ID environment variable for company-specific data")
     
-    # Prepare query parameters
     params = {
         'limit': endpoint_config['limit']
     }
     
-    # Add incremental filtering if enabled
-    if _should_use_incremental(endpoint_name):
-        start_date, end_date = _get_incremental_date_range(endpoint_name)
-        
-        # Add date filters based on endpoint configuration
-        date_filters = endpoint_config.get('date_filters', {})
-        for param_name, date_type in date_filters.items():
-            if date_type == 'incremental_start':
-                params[param_name] = start_date.isoformat()
-            elif date_type == 'incremental_end':
-                params[param_name] = end_date.isoformat()
+    # Determine incremental strategy and set parameters accordingly
+    strategy = _get_incremental_strategy(endpoint_name)
     
-    # Add additional parameters
+    if strategy == 'date_based':
+        start_date, end_date = _get_incremental_date_range(endpoint_name)
+        if start_date and end_date:
+            date_filters = endpoint_config.get('date_filters', {})
+            for param_name, date_type in date_filters.items():
+                if date_type == 'incremental_start':
+                    params[param_name] = start_date.isoformat()
+                elif date_type == 'incremental_end':
+                    params[param_name] = end_date.isoformat()
+            logger.info(f"   Using date-based incremental: {start_date.isoformat()} to {end_date.isoformat()}")
+    
+    elif strategy == 'offset_based':
+        start_offset = _get_incremental_offset_range(endpoint_name)
+        logger.info(f"   Using offset-based incremental starting from offset: {start_offset}")
+        # We'll handle offset in the pagination loop
+    
+    elif strategy == 'parent_driven':
+        logger.info(f"   Using parent-driven incremental - will extract all data related to recent parent changes")
+        # Parent-driven endpoints extract all data but rely on parent endpoint's incremental logic
+    
+    else:  # full_refresh
+        logger.info(f"   Using full refresh strategy")
+    
+    # Add include_children and fields_add if specified
     if endpoint_config.get('include_children'):
         params['include_children'] = ','.join(endpoint_config['include_children'])
     
     if endpoint_config.get('fields_add'):
         params['fields_add'] = ','.join(endpoint_config['fields_add'])
     
-    offset = 0
+    # Initialize offset handling
+    if strategy == 'offset_based':
+        offset = _get_incremental_offset_range(endpoint_name)
+    else:
+        offset = 0
+    
     page_count = 0
     max_pages = 1000
+    last_successful_offset = offset
     
     logger.info(f"   Starting pagination with params: {params}")
     
@@ -610,7 +1252,6 @@ def get_paginated_data(session, endpoint_config, endpoint_name):
                 response.raise_for_status()
                 data = response.json()
                 
-                # Extract records based on data_field
                 records = data.get(endpoint_config['data_field'], [])
                 total_count = data.get(endpoint_config['total_count_field'], 0)
                 next_url = data.get(endpoint_config['next_field'])
@@ -620,19 +1261,27 @@ def get_paginated_data(session, endpoint_config, endpoint_name):
                 
                 if not records:
                     logger.info(f"   No more records available, stopping pagination")
+                    # For offset-based incremental, update the final offset
+                    if strategy == 'offset_based':
+                        _update_offset(endpoint_name, last_successful_offset)
                     return all_data
                 
                 all_data.extend(records)
+                last_successful_offset = offset + len(records)
                 
-                # Check testing limit
                 if TESTING_MODE and MAX_RECORDS_PER_ENDPOINT and len(all_data) >= MAX_RECORDS_PER_ENDPOINT:
                     all_data = all_data[:MAX_RECORDS_PER_ENDPOINT]
                     logger.info(f"   Reached testing limit of {MAX_RECORDS_PER_ENDPOINT} records")
+                    # For offset-based incremental, update offset even in testing mode
+                    if strategy == 'offset_based':
+                        _update_offset(endpoint_name, last_successful_offset)
                     return all_data
                 
-                # Check if we have more data
                 if len(records) < endpoint_config['limit'] or not next_url:
                     logger.info(f"   Reached end of data (got {len(records)} < {endpoint_config['limit']} or no next URL)")
+                    # For offset-based incremental, update the final offset
+                    if strategy == 'offset_based':
+                        _update_offset(endpoint_name, last_successful_offset)
                     return all_data
                 
                 offset += endpoint_config['limit']
@@ -644,9 +1293,12 @@ def get_paginated_data(session, endpoint_config, endpoint_name):
                 logger.warning(f"   Request error on page {page_count}, attempt {attempt + 1}: {e}")
                 if attempt == max_retries - 1:
                     if page_count == 1:
-                        raise  # Fail fast if first page fails
+                        raise
                     else:
                         logger.warning(f"   Giving up on page {page_count} after {max_retries} attempts")
+                        # For offset-based incremental, save progress even on failure
+                        if strategy == 'offset_based' and last_successful_offset > _get_incremental_offset_range(endpoint_name):
+                            _update_offset(endpoint_name, last_successful_offset)
                         return all_data
                 time.sleep(2 ** attempt)
             
@@ -654,50 +1306,78 @@ def get_paginated_data(session, endpoint_config, endpoint_name):
                 logger.error(f"   Unexpected error on page {page_count}, attempt {attempt + 1}: {e}")
                 if attempt == max_retries - 1:
                     logger.error(f"   Giving up on page {page_count} after {max_retries} attempts")
+                    # For offset-based incremental, save progress even on failure
+                    if strategy == 'offset_based' and last_successful_offset > _get_incremental_offset_range(endpoint_name):
+                        _update_offset(endpoint_name, last_successful_offset)
                     return all_data
                 time.sleep(2 ** attempt)
         
         if not success:
             logger.error(f"   Page {page_count} failed completely, stopping")
+            # For offset-based incremental, save progress even on failure
+            if strategy == 'offset_based' and last_successful_offset > _get_incremental_offset_range(endpoint_name):
+                _update_offset(endpoint_name, last_successful_offset)
             break
     
     logger.info(f"✅ {endpoint_name}: Collected {len(all_data)} total records")
+    
+    # For offset-based incremental, save final offset
+    if strategy == 'offset_based':
+        _update_offset(endpoint_name, last_successful_offset)
+    
     return all_data
 
-# ---------------- STATE MANAGEMENT AFTER SUCCESSFUL LOAD ---------------- #
+# ---------------- STATE MANAGEMENT AFTER SUCCESSFUL LOAD (UPDATED FOR MULTIPLE STRATEGIES) ---------------- #
 def update_state_after_verified_load(endpoint_key, endpoint_config, df, raw_data, extracted_at):
-    """Update state ONLY after verified warehouse load."""
+    """Update state ONLY after verified warehouse load - supports multiple incremental strategies."""
     try:
         logger.info(f"📝 Updating state after VERIFIED load for {endpoint_key}")
         
-        incremental_field = endpoint_config.get('incremental_field')
+        strategy = _get_incremental_strategy(endpoint_key)
         
-        if incremental_field and not df.empty:
-            # Try to find incremental field in DataFrame
-            incremental_columns = [col for col in df.columns 
-                                 if incremental_field.lower() in col.lower()]
+        if strategy == 'date_based':
+            incremental_field = endpoint_config.get('incremental_field')
             
-            if incremental_columns:
-                actual_field = incremental_columns[0]
-                timestamps = _parse_timestamp_column(df, actual_field)
-                valid_timestamps = [ts for ts in timestamps if ts is not None]
+            if incremental_field and not df.empty:
+                # Look for columns containing the incremental field name
+                incremental_columns = [col for col in df.columns 
+                                     if incremental_field.lower() in col.lower()]
                 
-                if valid_timestamps:
-                    max_ts = max(valid_timestamps)
-                    _update_watermark(endpoint_key, max_ts)
-                    logger.info(f"🕒 Updated watermark from data: {max_ts.isoformat()}")
+                if incremental_columns:
+                    actual_field = incremental_columns[0]
+                    timestamps = _parse_timestamp_column(df, actual_field)
+                    valid_timestamps = [ts for ts in timestamps if ts is not None]
+                    
+                    if valid_timestamps:
+                        max_ts = max(valid_timestamps)
+                        _update_watermark(endpoint_key, max_ts)
+                        logger.info(f"🕒 Updated date-based watermark from data: {max_ts.isoformat()}")
+                    else:
+                        _update_watermark(endpoint_key, extracted_at)
+                        logger.info(f"🕒 Fallback date-based watermark: {extracted_at.isoformat()}")
                 else:
+                    logger.warning(f"⚠️ Incremental field '{incremental_field}' not found in {endpoint_key} data")
                     _update_watermark(endpoint_key, extracted_at)
-                    logger.info(f"🕒 Fallback watermark: {extracted_at.isoformat()}")
+                    logger.info(f"🕒 Extraction timestamp watermark: {extracted_at.isoformat()}")
             else:
-                logger.warning(f"⚠️ Incremental field '{incremental_field}' not found in {endpoint_key} data")
                 _update_watermark(endpoint_key, extracted_at)
-                logger.info(f"🕒 Extraction timestamp watermark: {extracted_at.isoformat()}")
-        else:
-            _update_watermark(endpoint_key, extracted_at)
-            logger.info(f"🕒 No incremental field watermark: {extracted_at.isoformat()}")
+                logger.info(f"🕒 No incremental field watermark: {extracted_at.isoformat()}")
         
-        # CRITICAL: Save state atomically after all updates
+        elif strategy == 'offset_based':
+            # Offset already updated during pagination in get_paginated_data
+            logger.info(f"🔢 Offset-based watermark already updated during pagination")
+            # Also set extraction time for reference
+            # _update_watermark(endpoint_key, extracted_at)
+        
+        elif strategy == 'parent_driven':
+            # For parent-driven endpoints, update extraction timestamp
+            _update_watermark(endpoint_key, extracted_at)
+            logger.info(f"🔗 Parent-driven watermark: {extracted_at.isoformat()}")
+        
+        else:  # full_refresh
+            _update_watermark(endpoint_key, extracted_at)
+            logger.info(f"🔄 Full refresh watermark: {extracted_at.isoformat()}")
+        
         _save_state()
         logger.info("✅ State saved after verified load")
         
@@ -706,9 +1386,9 @@ def update_state_after_verified_load(endpoint_key, endpoint_config, df, raw_data
         logger.error("❌ CRITICAL: Next run may have data gaps!")
         raise
 
-# ---------------- MAIN EXTRACTION FUNCTION ---------------- #
+# ---------------- MAIN EXTRACTION FUNCTION (UPDATED FOR MULTIPLE STRATEGIES) ---------------- #
 def extract_leaflink_endpoint(endpoint_key, **context):
-    """ATOMIC extraction with bulletproof state management."""
+    """ATOMIC extraction with bulletproof state management and multiple incremental strategies."""
     if endpoint_key not in ENABLED_ENDPOINTS:
         logger.warning(f"⚠️ Endpoint {endpoint_key} not enabled")
         return 0
@@ -720,9 +1400,13 @@ def extract_leaflink_endpoint(endpoint_key, **context):
         logger.error(f"❌ Unknown endpoint: {endpoint_key}")
         return 0
 
-    logger.info(f"🔄 ATOMIC extraction for {endpoint_key}")
+    # Check if we should skip reference data extraction
+    if _should_skip_reference_data_extraction(endpoint_key):
+        return 0
+
+    strategy = _get_incremental_strategy(endpoint_key)
+    logger.info(f"🔄 ATOMIC extraction for {endpoint_key} using {strategy} strategy")
     
-    # CRITICAL: Backup current state before ANY changes
     state_backup = None
     with _STATE_LOCK:
         state_backup = _STATE_CACHE.copy()
@@ -730,15 +1414,20 @@ def extract_leaflink_endpoint(endpoint_key, **context):
     logger.info(f"💾 State backed up for rollback safety")
 
     try:
-        # Step 1: Extract data (no state changes)
         session = create_authenticated_session()
         raw_data = get_paginated_data(session, endpoint_config, endpoint_key)
 
         if not raw_data:
             logger.warning(f"⚠️ No data returned for {endpoint_key}")
+            # For reference data and some strategies, still update watermark even if no data
+            if strategy in ['full_refresh', 'offset_based']:
+                if strategy == 'full_refresh':
+                    _update_watermark(endpoint_key, _utc_now())
+                # offset_based already updated in get_paginated_data
+                _save_state()
+                logger.info(f"✅ Updated watermark for {strategy} strategy with no results")
             return 0
 
-        # Step 2: Process data (no state changes)
         flattened = []
         for i, record in enumerate(raw_data):
             try:
@@ -749,9 +1438,15 @@ def extract_leaflink_endpoint(endpoint_key, **context):
 
         if not flattened:
             logger.warning(f"⚠️ No valid records after flattening for {endpoint_key}")
+            # For reference data and some strategies, still update watermark even if no valid data
+            if strategy in ['full_refresh', 'offset_based']:
+                if strategy == 'full_refresh':
+                    _update_watermark(endpoint_key, _utc_now())
+                # offset_based already updated in get_paginated_data
+                _save_state()
+                logger.info(f"✅ Updated watermark for {strategy} strategy with no valid records")
             return 0
 
-        # Step 3: Create DataFrame
         df = pd.DataFrame(flattened)
         extracted_at = _utc_now()
         df['_extracted_at'] = extracted_at.isoformat()
@@ -760,7 +1455,6 @@ def extract_leaflink_endpoint(endpoint_key, **context):
 
         logger.info(f"   📊 Prepared {len(df)} records for warehouse load")
 
-        # Step 4: CRITICAL - Load to warehouse FIRST (before state updates)
         try:
             records_loaded = load_dataframe_to_warehouse_verified(df, endpoint_key, extracted_at)
             
@@ -774,21 +1468,18 @@ def extract_leaflink_endpoint(endpoint_key, **context):
             logger.error(f"❌ WAREHOUSE LOAD FAILED: {warehouse_error}")
             logger.error("🔄 RESTORING original state (no changes made)")
             
-            # Restore original state
             with _STATE_LOCK:
                 _STATE_CACHE.clear()
                 _STATE_CACHE.update(state_backup)
             
-            raise  # Fail the task
+            raise
 
-        # Step 5: ONLY NOW update state after verified load
         try:
             update_state_after_verified_load(endpoint_key, endpoint_config, df, raw_data, extracted_at)
             logger.info("✅ State updated after verified warehouse load")
             
         except Exception as state_error:
             logger.error(f"❌ STATE UPDATE FAILED: {state_error}")
-            # Data is loaded successfully, so don't fail pipeline
             logger.warning("⚠️ Data loaded but state may be inconsistent - next run will detect")
             
         return records_loaded
@@ -796,7 +1487,6 @@ def extract_leaflink_endpoint(endpoint_key, **context):
     except Exception as e:
         logger.error(f"❌ EXTRACTION FAILED for {endpoint_key}: {e}")
         
-        # Restore original state on any failure
         logger.error("🔄 RESTORING original state due to extraction failure")
         with _STATE_LOCK:
             _STATE_CACHE.clear()
@@ -813,7 +1503,6 @@ def should_run_endpoint(endpoint_key, execution_dt: datetime, completed_endpoint
     endpoint_config = LEAFLINK_ENDPOINTS.get(endpoint_key, {})
     dependencies = endpoint_config.get('depends_on', [])
     
-    # Check if all dependencies are completed
     for dep in dependencies:
         if dep not in completed_endpoints:
             logger.info(f"⏳ {endpoint_key} waiting for dependency {dep}")
@@ -822,12 +1511,34 @@ def should_run_endpoint(endpoint_key, execution_dt: datetime, completed_endpoint
     return True
 
 def get_endpoint_execution_order():
-    """Get endpoints in dependency order."""
+    """Get endpoints in dependency order with enhanced logic for product catalog."""
     endpoints = list(ENABLED_ENDPOINTS.keys())
     completed = set()
     ordered = []
     
-    # Simple dependency resolution
+    execution_tiers = [
+        ['product_categories', 'product_lines', 'strains', 'customer_status', 'customer_tiers', 'license_types', 'companies'],
+        ['product_subcategories', 'company_staff', 'licenses', 'brands'],
+        ['orders_received', 'products', 'customers', 'promocodes'],
+        ['product_batches', 'contacts'],
+        ['order_sales_reps', 'order_payments', 'line_items'],
+        ['product_images', 'batch_documents', 'activity_entries', 'reports'],
+        ['order_event_logs']
+    ]
+    
+    for tier in execution_tiers:
+        tier_endpoints = [ep for ep in tier if ep in endpoints]
+        
+        tier_endpoints.sort(key=lambda ep: {
+            'high': 0, 'medium': 1, 'low': 2
+        }.get(LEAFLINK_ENDPOINTS.get(ep, {}).get('priority', 'medium'), 1))
+        
+        for endpoint in tier_endpoints:
+            if should_run_endpoint(endpoint, None, completed):
+                ordered.append(endpoint)
+                completed.add(endpoint)
+                endpoints.remove(endpoint)
+    
     max_iterations = len(endpoints) * 2
     iteration = 0
     
@@ -843,12 +1554,26 @@ def get_endpoint_execution_order():
                 made_progress = True
         
         if not made_progress:
-            # Add remaining endpoints (circular dependencies or missing deps)
             logger.warning(f"⚠️ Adding remaining endpoints without dependency check: {endpoints}")
             ordered.extend(endpoints)
             break
     
     logger.info(f"📋 Endpoint execution order: {ordered}")
+    
+    order_related = [ep for ep in ordered if ep.startswith('order') or ep in ['line_items']]
+    product_related = [ep for ep in ordered if ep.startswith('product') or ep in ['products', 'strains']]
+    crm_related = [ep for ep in ordered if ep.startswith('customer') or ep in ['customers', 'contacts', 'activity_entries']]
+    company_related = [ep for ep in ordered if ep.startswith('company') or ep.startswith('license') or ep in ['companies', 'brands', 'promocodes', 'reports']]
+    
+    if order_related:
+        logger.info(f"📦 Order-related endpoints: {order_related}")
+    if product_related:
+        logger.info(f"🏷️ Product catalog endpoints: {product_related}")
+    if crm_related:
+        logger.info(f"👥 CRM-related endpoints: {crm_related}")
+    if company_related:
+        logger.info(f"🏢 Company & operational endpoints: {company_related}")
+    
     return ordered
 
 # ---------------- DAG INTEGRATION FUNCTIONS ---------------- #
@@ -857,11 +1582,10 @@ def finalize_state_after_warehouse_load(context):
     try:
         logger.info("✅ All state updates finalized after successful warehouse loads")
         
-        # Verify state file integrity
         try:
             with open(_state_path(), 'r') as f:
                 state_content = f.read()
-                json.loads(state_content)  # Verify it's valid JSON
+                json.loads(state_content)
             logger.info("✅ State file integrity verified")
         except Exception as e:
             logger.error(f"❌ State file integrity check failed: {e}")
@@ -880,16 +1604,15 @@ def extract_all_endpoints_with_dependencies(**context):
     
     for endpoint_key in endpoint_order:
         try:
-            # Check dependencies
             endpoint_config = LEAFLINK_ENDPOINTS.get(endpoint_key, {})
             dependencies = endpoint_config.get('depends_on', [])
+            strategy = _get_incremental_strategy(endpoint_key)
             
-            # Wait for dependencies (in real implementation, this would be handled by DAG)
             for dep in dependencies:
                 if dep not in completed_endpoints and dep in ENABLED_ENDPOINTS:
                     logger.warning(f"⚠️ {endpoint_key} dependency {dep} not completed")
             
-            logger.info(f"📊 Extracting {endpoint_key}...")
+            logger.info(f"📊 Extracting {endpoint_key} using {strategy} strategy...")
             records = extract_leaflink_endpoint(endpoint_key, **context)
             total_records += records
             extraction_results[endpoint_key] = records
@@ -900,14 +1623,13 @@ def extract_all_endpoints_with_dependencies(**context):
         except Exception as e:
             logger.error(f"❌ {endpoint_key} failed: {e}")
             extraction_results[endpoint_key] = f"Failed: {e}"
-            # Continue with other endpoints instead of failing everything
             continue
     
-    # Final summary
     logger.info("📈 LeafLink Extraction Summary:")
     for endpoint, result in extraction_results.items():
         if isinstance(result, int):
-            logger.info(f"   {endpoint}: {result} records")
+            strategy = _get_incremental_strategy(endpoint)
+            logger.info(f"   {endpoint} ({strategy}): {result} records")
         else:
             logger.info(f"   {endpoint}: {result}")
     

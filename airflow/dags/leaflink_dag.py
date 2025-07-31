@@ -404,7 +404,7 @@ logger.info(f"✅ Enabled endpoints: {list(enabled_endpoints.keys())}")
 
 # ---------------- EMAIL CALLBACKS (Enhanced) ---------------- #
 def send_success_email(context):
-    """Send enhanced success notification email."""
+    """Send enhanced extraction success notification email."""
     try:
         from airflow.utils.email import send_email
         recipients = config['notifications']['email'].get('success_recipients', [])
@@ -419,33 +419,60 @@ def send_success_email(context):
             key='validation_results'
         )
         
+        # Get extraction results for detailed summary
+        extraction_results = context['task_instance'].xcom_pull(
+            task_ids='run_coordinated_extraction', 
+            key='extraction_results'
+        ) or {}
+        
         total_records = context['task_instance'].xcom_pull(
             task_ids='run_coordinated_extraction', 
             key='total_records'
         ) or 0
         
-        subject = f"✅ SUCCESS: {dag_run.dag_id} - {total_records:,} records"
+        subject = f"✅ EXTRACTION SUCCESS: {dag_run.dag_id} - {total_records:,} records"
         
         html = f"""
-        <h3>✅ LeafLink Pipeline Success</h3>
+        <h3>✅ LeafLink Extraction Pipeline Success</h3>
         <p><strong>DAG:</strong> {dag_run.dag_id}</p>
         <p><strong>Run ID:</strong> {dag_run.run_id}</p>
         <p><strong>Execution Date:</strong> {dag_run.execution_date}</p>
-        <p><strong>Total Records:</strong> {total_records:,}</p>
+        <p><strong>Total Records Extracted:</strong> {total_records:,}</p>
+        
+        <h4>📊 Extraction Summary by Endpoint</h4>
+        <table border="1" style="border-collapse: collapse;">
+        <tr><th>Endpoint</th><th>Records</th><th>Status</th></tr>
         """
+        
+        for endpoint, result in extraction_results.items():
+            if isinstance(result, int):
+                status = "✅ Success"
+                records = f"{result:,}"
+            else:
+                status = "❌ Failed" if "Failed" in str(result) else "⚠️ Warning"
+                records = str(result)
+            html += f"<tr><td>{endpoint}</td><td>{records}</td><td>{status}</td></tr>"
+        
+        html += "</table>"
         
         if validation_results:
             html += f"""
-            <h4>📊 Data Quality Summary</h4>
-            <p><strong>Status:</strong> {validation_results.get('overall_status', 'Unknown')}</p>
+            <h4>🔍 Data Validation Summary</h4>
+            <p><strong>Overall Status:</strong> {validation_results.get('overall_status', 'Unknown')}</p>
             <p><strong>Endpoints Validated:</strong> {validation_results.get('total_endpoints_validated', 0)}</p>
             """
             
             if validation_results.get('warnings'):
                 html += f"<p><strong>Warnings:</strong> {len(validation_results['warnings'])}</p>"
+                html += "<ul>"
+                for warning in validation_results['warnings'][:3]:  # Show first 3
+                    html += f"<li>{warning}</li>"
+                html += "</ul>"
+        
+        html += "<p><em>💡 Silver transformations will be handled by the unified silver DAG</em></p>"
         
         send_email(to=recipients, subject=subject, html_content=html)
-        logger.info(f"✅ Success email sent to {recipients}")
+        logger.info(f"✅ Extraction success email sent to {recipients}")
     except Exception as e:
         logger.error(f"❌ Failed to send success email: {e}")
 
@@ -673,325 +700,329 @@ def list_dbt_models():
         logger.error(f"❌ dbt ls failed:\nSTDOUT:\n{e.stdout}\nSTDERR:\n{e.stderr}")
         raise
 
-def run_dbt_transformations(**context):
-    """
-    Build a dbt project with ONLY the models for endpoints that were actually extracted.
-    Similar to Repsly but adapted for LeafLink data structure.
-    """
-    import tempfile, shutil, re, subprocess, yaml, json, os
-    from pathlib import Path
 
-    logger.info("🔧 Running LeafLink dbt transformations...")
 
-    ti = context["task_instance"]
-    extraction_results = ti.xcom_pull(task_ids="run_coordinated_extraction", key="extraction_results") or {}
+def skip_dbt_transformations(**context):
+    """Skip dbt transformations - handled by separate unified silver DAG."""
+    logger.info("⏭️ Skipping dbt transformations (handled by unified silver DAG)")
+    return {"status": "skipped", "reason": "Silver processing moved to unified DAG"}
 
-    always_extract = config["extraction"]["endpoints"].get("always_extract", []) or []
-    optional_extract = config["extraction"]["endpoints"].get("optional_extract", []) or []
-    disabled = set(config["extraction"]["endpoints"].get("disabled", []) or [])
-    allowed = set(always_extract + optional_extract) - disabled
 
-    loaded_endpoints = [e for e, v in extraction_results.items() if isinstance(v, int) and v > 0]
-    endpoints_to_transform = [e for e in loaded_endpoints if e in allowed]
+# def run_dbt_transformations(**context):
+#     """
+#     Build a dbt project with ONLY the LeafLink silver/curated models for endpoints that were actually extracted.
+#     Only searches in LeafLink-specific folders to avoid conflicts with other data sources.
+#     """
+#     import tempfile, shutil, re, subprocess, yaml, json, os
+#     from pathlib import Path
 
-    if not endpoints_to_transform:
-        logger.info("⚠️ No endpoints need transformation, skipping dbt.")
-        return {"raw_models": [], "business_models": []}
+#     logger.info("🔧 Running LeafLink dbt transformations (silver models only)...")
 
-    logger.info("📊 Endpoints to transform: %s", endpoints_to_transform)
+#     ti = context["task_instance"]
+#     extraction_results = ti.xcom_pull(task_ids="run_coordinated_extraction", key="extraction_results") or {}
 
-    project_dir = Path(config["dbt"]["project_dir"])
-    profiles_dir = Path(config["dbt"]["profiles_dir"])
-    models_dir = project_dir / "models"
-    all_sql_files = {f.stem: f for f in models_dir.rglob("*.sql")}
+#     always_extract = config["extraction"]["endpoints"].get("always_extract", []) or []
+#     optional_extract = config["extraction"]["endpoints"].get("optional_extract", []) or []
+#     disabled = set(config["extraction"]["endpoints"].get("disabled", []) or [])
+#     allowed = set(always_extract + optional_extract) - disabled
 
-    def raw_candidates(ep):
-        # LeafLink specific patterns
-        c = [f"{ep}_raw", f"raw_{ep}", f"leaflink_{ep}_raw", f"raw_leaflink_{ep}"]
-        if ep.endswith("s"):
-            sing = ep[:-1]
-            c += [f"{sing}_raw", f"raw_{sing}", f"leaflink_{sing}_raw"]
-        return c
+#     loaded_endpoints = [e for e, v in extraction_results.items() if isinstance(v, int) and v > 0]
+#     endpoints_to_transform = [e for e in loaded_endpoints if e in allowed]
 
-    def silver_candidates(ep):
-        """Silver model candidates for LeafLink."""
-        candidates = []
-        
-        # Basic patterns first
-        candidates.extend([ep, f"leaflink_{ep}"])
-        
-        if ep.endswith("s"):
-            singular = ep[:-1]
-            candidates.extend([singular, f"leaflink_{singular}"])
-            
-            # Business patterns
-            candidates.extend([
-                f"{ep}_staging",
-                f"{singular}_staging",
-                f"{ep}_business",
-                f"{singular}_business"
-            ])
-        else:
-            plural = f"{ep}s"
-            candidates.extend([
-                plural,
-                f"leaflink_{plural}",
-                f"{ep}_staging",
-                f"{plural}_staging"
-            ])
-        
-        return candidates
+#     if not endpoints_to_transform:
+#         logger.info("⚠️ No endpoints need transformation, skipping dbt.")
+#         return {"silver_models": []}
 
-    # Find all models and their dependencies
-    def find_model_dependencies(model_name, all_sql_files, visited=None):
-        """Find all dependencies for a model by parsing its SQL."""
-        if visited is None:
-            visited = set()
-        
-        if model_name in visited or model_name not in all_sql_files:
-            return set()
-        
-        visited.add(model_name)
-        dependencies = set()
-        
-        try:
-            sql_content = all_sql_files[model_name].read_text()
-            
-            # Find ref() calls
-            ref_pattern = re.compile(r"ref\(\s*['\"]([^'\"]+)['\"]\s*\)")
-            refs = ref_pattern.findall(sql_content)
-            
-            for ref_model in refs:
-                if ref_model in all_sql_files:
-                    dependencies.add(ref_model)
-                    dependencies.update(find_model_dependencies(ref_model, all_sql_files, visited.copy()))
-            
-        except Exception as e:
-            logger.warning(f"⚠️ Could not parse dependencies for {model_name}: {e}")
-        
-        return dependencies
+#     logger.info("📊 Endpoints to transform: %s", endpoints_to_transform)
 
-    raw_models, silver_models = [], []
-    all_needed_models = set()
+#     project_dir = Path(config["dbt"]["project_dir"])
+#     profiles_dir = Path(config["dbt"]["profiles_dir"])
+#     models_dir = project_dir / "models"
     
-    for ep in endpoints_to_transform:
-        # Find raw model
-        r = next((c for c in raw_candidates(ep) if c in all_sql_files), None)
-        if r: 
-            raw_models.append(r)
-            all_needed_models.add(r)
-        else: 
-            logger.warning("⏭ No raw model for %s", ep)
+#     # ============== CRITICAL FIX ==============
+#     # Search ONLY in LeafLink-specific folders (skip if they don't exist)
+#     leaflink_folders = ["curated/leaflink", "raw/leaflink", "staging/leaflink"]
+#     all_sql_files = {}
+    
+#     for folder in leaflink_folders:
+#         folder_path = models_dir / folder
+#         if folder_path.exists():
+#             logger.info(f"📁 Searching for models in: {folder_path}")
+#             for f in folder_path.rglob("*.sql"):
+#                 all_sql_files[f.stem] = f
+#         else:
+#             logger.info(f"⏭️ Skipping non-existent folder: {folder_path}")
+    
+#     if not all_sql_files:
+#         logger.info("⚠️ No LeafLink model folders found, skipping dbt transformations.")
+#         return {"silver_models": []}
+    
+#     logger.info(f"📦 Found {len(all_sql_files)} LeafLink models: {list(all_sql_files.keys())}")
+#     # ==========================================
+
+#     def silver_candidates(ep):
+#         """Silver model candidates for LeafLink."""
+#         candidates = []
         
-        # Find silver model
-        s = next((c for c in silver_candidates(ep) if c in all_sql_files), None)
-        if s: 
-            silver_models.append(s)
-            all_needed_models.add(s)
+#         # Basic patterns first
+#         candidates.extend([ep, f"leaflink_{ep}"])
+        
+#         if ep.endswith("s"):
+#             singular = ep[:-1]
+#             candidates.extend([singular, f"leaflink_{singular}"])
             
-            # Find all dependencies for this silver model
-            deps = find_model_dependencies(s, all_sql_files)
-            if deps:
-                logger.info(f"📋 {s} depends on: {sorted(deps)}")
-                all_needed_models.update(deps)
-                for dep in deps:
-                    if dep not in raw_models and dep not in silver_models:
-                        silver_models.append(dep)
-        else: 
-            logger.warning("⏭ No silver model for %s", ep)
-
-    if not raw_models and not silver_models:
-        logger.info("⚠️ No matching dbt models found.")
-        return {"raw_models": [], "business_models": []}
-
-    logger.info("📦 Models to copy: %s", sorted(all_needed_models))
-
-    tmp_path = Path(tempfile.mkdtemp(prefix="dbt_filtered_leaflink_"))
-    logger.info("📁 Temp dbt project: %s", tmp_path)
-
-    # Create dirs
-    for d in ["models", "macros", "seeds", "snapshots", "tests", "analyses", "target", "logs"]:
-        (tmp_path / d).mkdir(parents=True, exist_ok=True)
-
-    # Copy macros if they exist
-    macros_src = project_dir / "macros"
-    if macros_src.exists():
-        macros_dest = tmp_path / "macros"
-        shutil.copytree(macros_src, macros_dest, dirs_exist_ok=True)
-        logger.info("✅ Copied macros to temp project")
-
-    # Copy only needed models
-    def copy_model(stem):
-        src = all_sql_files[stem]
-        rel = src.relative_to(models_dir)
-        dest = tmp_path / "models" / rel
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, dest)
-
-    for m in sorted(all_needed_models):
-        copy_model(m)
-
-    # dbt_project.yml
-    orig_proj = yaml.safe_load((project_dir / "dbt_project.yml").read_text())
-
-    base = {
-        "name": orig_proj["name"],
-        "version": "1.0.0",
-        "config-version": 2,
-        "profile": orig_proj.get("profile", "data_platform"),
-        "model-paths": ["models"],
-        "macro-paths": ["macros"],
-        "seed-paths": ["seeds"],
-        "snapshot-paths": ["snapshots"],
-        "test-paths": ["tests"],
-        "analysis-paths": ["analyses"],
-        "clean-targets": ["target"],
-        "models": orig_proj.get("models", {}),
-        "vars": orig_proj.get("vars", {}),
-    }
-    (tmp_path / "dbt_project.yml").write_text(yaml.safe_dump(base, sort_keys=False))
-
-    # Minimal sources for LeafLink
-    raw_schema = config["warehouse"]["schemas"]["raw_schema"]
-    src_regex = re.compile(r"source\(\s*['\"]bronze_leaflink['\"]\s*,\s*['\"]([^'\"]+)['\"]\s*\)")
-
-    source_tables = set()
-    for m in raw_models:
-        rel = all_sql_files[m].relative_to(models_dir)
-        sql_txt = (tmp_path / "models" / rel).read_text()
-        matches = src_regex.findall(sql_txt)
-        if matches:
-            source_tables.update(matches)
-        else:
-            ep_guess = m.replace("raw_", "").replace("_raw", "")
-            source_tables.add(f"raw_{ep_guess}")
-
-    src_yaml = [
-        "version: 2",
-        "sources:",
-        "  - name: bronze_leaflink",
-        f"    schema: {raw_schema}",
-        "    tables:"
-    ] + [f"      - name: {t}" for t in sorted(source_tables)]
-    (tmp_path / "models" / "_leaflink_sources.yml").write_text("\n".join(src_yaml) + "\n")
-    logger.info("🧾 Wrote minimal sources file with tables: %s", sorted(source_tables))
-
-    # Helper to run dbt commands
-    def run_cmd(cmd_list, prefix):
-        logger.info("▶️ %s: %s", prefix, " ".join(cmd_list))
-        env = os.environ.copy()
-        env["DBT_LOG_FORMAT"] = "json"
-        try:
-            res = subprocess.run(cmd_list, cwd=str(tmp_path), capture_output=True, text=True, check=True, env=env)
-            logger.info("✅ %s succeeded", prefix)
-            return res.stdout, res.stderr
-        except subprocess.CalledProcessError as e:
-            logger.error("❌ %s FAILED", prefix)
-            logger.error("STDOUT:\n%s", e.stdout)
-            logger.error("STDERR:\n%s", e.stderr)
-            raise
-
-    exec_conf = config["dbt"]["execution"]
-    select_list = sorted(all_needed_models)
-
-    # 1) compile
-    compile_cmd = [
-        "dbt", "compile",
-        "--project-dir", str(tmp_path),
-        "--profiles-dir", str(profiles_dir),
-        "--no-partial-parse",
-        "--select", *select_list
-    ]
-    run_cmd(compile_cmd, "dbt compile")
-
-    # 2) run
-    run_cmd_list = [
-        "dbt", "run",
-        "--project-dir", str(tmp_path),
-        "--profiles-dir", str(profiles_dir),
-        "--no-partial-parse",
-        "--select", *select_list
-    ]
-    if exec_conf.get("fail_fast"):
-        run_cmd_list.append("--fail-fast")
-    if exec_conf.get("threads"):
-        run_cmd_list += ["--threads", str(exec_conf["threads"])]
-
-    try:
-        out, err = run_cmd(run_cmd_list, "dbt run")
-    except subprocess.CalledProcessError as e:
-        logger.error("❌ dbt run FAILED - analyzing errors...")
+#             # Business patterns
+#             candidates.extend([
+#                 f"{ep}_staging",
+#                 f"{singular}_staging",
+#                 f"{ep}_business",
+#                 f"{singular}_business"
+#             ])
+#         else:
+#             plural = f"{ep}s"
+#             candidates.extend([
+#                 plural,
+#                 f"leaflink_{plural}",
+#                 f"{ep}_staging",
+#                 f"{plural}_staging"
+#             ])
         
-        # Detailed error analysis
-        rr = tmp_path / "target" / "run_results.json"
-        mf = tmp_path / "target" / "manifest.json"
+#         return candidates
+
+#     # Find all models and their dependencies
+#     def find_model_dependencies(model_name, all_sql_files, visited=None):
+#         """Find all dependencies for a model by parsing its SQL."""
+#         if visited is None:
+#             visited = set()
         
-        if rr.exists() and mf.exists():
-            try:
-                run_results = json.loads(rr.read_text())
-                manifest = json.loads(mf.read_text())
+#         if model_name in visited or model_name not in all_sql_files:
+#             return set()
+        
+#         visited.add(model_name)
+#         dependencies = set()
+        
+#         try:
+#             sql_content = all_sql_files[model_name].read_text()
+            
+#             # Find ref() calls
+#             ref_pattern = re.compile(r"ref\(\s*['\"]([^'\"]+)['\"]\s*\)")
+#             refs = ref_pattern.findall(sql_content)
+            
+#             for ref_model in refs:
+#                 if ref_model in all_sql_files:
+#                     dependencies.add(ref_model)
+#                     dependencies.update(find_model_dependencies(ref_model, all_sql_files, visited.copy()))
+            
+#         except Exception as e:
+#             logger.warning(f"⚠️ Could not parse dependencies for {model_name}: {e}")
+        
+#         return dependencies
+
+#     silver_models = []
+#     all_needed_models = set()
+    
+#     for ep in endpoints_to_transform:
+#         # Find silver model only (no raw model search)
+#         s = next((c for c in silver_candidates(ep) if c in all_sql_files), None)
+#         if s: 
+#             silver_models.append(s)
+#             all_needed_models.add(s)
+#             logger.info(f"✅ Found silver model for {ep}: {s}")
+            
+#             # Find all dependencies for this silver model
+#             deps = find_model_dependencies(s, all_sql_files)
+#             if deps:
+#                 logger.info(f"📋 {s} depends on: {sorted(deps)}")
+#                 all_needed_models.update(deps)
+#                 for dep in deps:
+#                     if dep not in silver_models:
+#                         silver_models.append(dep)
+#         else: 
+#             logger.warning(f"⏭ No silver model for {ep} in LeafLink folders")
+
+#     if not silver_models:
+#         logger.info("⚠️ No matching LeafLink silver models found.")
+#         return {"silver_models": []}
+
+#     logger.info("📦 Silver models to copy: %s", sorted(all_needed_models))
+
+#     tmp_path = Path(tempfile.mkdtemp(prefix="dbt_filtered_leaflink_"))
+#     logger.info("📁 Temp dbt project: %s", tmp_path)
+
+#     # Create dirs
+#     for d in ["models", "macros", "seeds", "snapshots", "tests", "analyses", "target", "logs"]:
+#         (tmp_path / d).mkdir(parents=True, exist_ok=True)
+
+#     # Copy macros if they exist
+#     macros_src = project_dir / "macros"
+#     if macros_src.exists():
+#         macros_dest = tmp_path / "macros"
+#         shutil.copytree(macros_src, macros_dest, dirs_exist_ok=True)
+#         logger.info("✅ Copied macros to temp project")
+
+#     # Copy only needed models
+#     def copy_model(stem):
+#         src = all_sql_files[stem]
+#         rel = src.relative_to(models_dir)
+#         dest = tmp_path / "models" / rel
+#         dest.parent.mkdir(parents=True, exist_ok=True)
+#         shutil.copy2(src, dest)
+
+#     for m in sorted(all_needed_models):
+#         copy_model(m)
+
+#     # dbt_project.yml
+#     orig_proj = yaml.safe_load((project_dir / "dbt_project.yml").read_text())
+
+#     base = {
+#         "name": orig_proj["name"],
+#         "version": "1.0.0",
+#         "config-version": 2,
+#         "profile": orig_proj.get("profile", "data_platform"),
+#         "model-paths": ["models"],
+#         "macro-paths": ["macros"],
+#         "seed-paths": ["seeds"],
+#         "snapshot-paths": ["snapshots"],
+#         "test-paths": ["tests"],
+#         "analysis-paths": ["analyses"],
+#         "clean-targets": ["target"],
+#         "models": orig_proj.get("models", {}),
+#         "vars": orig_proj.get("vars", {}),
+#     }
+#     (tmp_path / "dbt_project.yml").write_text(yaml.safe_dump(base, sort_keys=False))
+
+#     # Sources file for LeafLink (silver models will reference raw tables via sources)
+#     raw_schema = config["warehouse"]["schemas"]["raw_schema"]
+#     src_regex = re.compile(r"source\(\s*['\"]bronze_leaflink['\"]\s*,\s*['\"]([^'\"]+)['\"]\s*\)")
+
+#     source_tables = set()
+#     for m in all_needed_models:
+#         rel = all_sql_files[m].relative_to(models_dir)
+#         sql_txt = (tmp_path / "models" / rel).read_text()
+#         matches = src_regex.findall(sql_txt)
+#         if matches:
+#             source_tables.update(matches)
+
+#     # Add common LeafLink source tables that silver models typically need
+#     for ep in endpoints_to_transform:
+#         source_tables.add(f"raw_{ep}")
+
+#     src_yaml = [
+#         "version: 2",
+#         "sources:",
+#         "  - name: bronze_leaflink",
+#         f"    schema: {raw_schema}",
+#         "    tables:"
+#     ] + [f"      - name: {t}" for t in sorted(source_tables)]
+#     (tmp_path / "models" / "_leaflink_sources.yml").write_text("\n".join(src_yaml) + "\n")
+#     logger.info("🧾 Wrote sources file with tables: %s", sorted(source_tables))
+
+#     # Helper to run dbt commands
+#     def run_cmd(cmd_list, prefix):
+#         logger.info("▶️ %s: %s", prefix, " ".join(cmd_list))
+#         env = os.environ.copy()
+#         env["DBT_LOG_FORMAT"] = "json"
+#         try:
+#             res = subprocess.run(cmd_list, cwd=str(tmp_path), capture_output=True, text=True, check=True, env=env)
+#             logger.info("✅ %s succeeded", prefix)
+#             return res.stdout, res.stderr
+#         except subprocess.CalledProcessError as e:
+#             logger.error("❌ %s FAILED", prefix)
+#             logger.error("STDOUT:\n%s", e.stdout)
+#             logger.error("STDERR:\n%s", e.stderr)
+#             raise
+
+#     exec_conf = config["dbt"]["execution"]
+#     select_list = sorted(all_needed_models)
+
+#     # 1) compile
+#     compile_cmd = [
+#         "dbt", "compile",
+#         "--project-dir", str(tmp_path),
+#         "--profiles-dir", str(profiles_dir),
+#         "--no-partial-parse",
+#         "--select", *select_list
+#     ]
+#     run_cmd(compile_cmd, "dbt compile")
+
+#     # 2) run
+#     run_cmd_list = [
+#         "dbt", "run",
+#         "--project-dir", str(tmp_path),
+#         "--profiles-dir", str(profiles_dir),
+#         "--no-partial-parse",
+#         "--select", *select_list
+#     ]
+#     if exec_conf.get("fail_fast"):
+#         run_cmd_list.append("--fail-fast")
+#     if exec_conf.get("threads"):
+#         run_cmd_list += ["--threads", str(exec_conf["threads"])]
+
+#     try:
+#         out, err = run_cmd(run_cmd_list, "dbt run")
+#     except subprocess.CalledProcessError as e:
+#         logger.error("❌ dbt run FAILED - analyzing errors...")
+        
+#         # Detailed error analysis
+#         rr = tmp_path / "target" / "run_results.json"
+#         mf = tmp_path / "target" / "manifest.json"
+        
+#         if rr.exists() and mf.exists():
+#             try:
+#                 run_results = json.loads(rr.read_text())
+#                 manifest = json.loads(mf.read_text())
                 
-                failed_nodes = [r for r in run_results.get("results", []) if r.get("status") == "error"]
+#                 failed_nodes = [r for r in run_results.get("results", []) if r.get("status") == "error"]
                 
-                if failed_nodes:
-                    logger.error(f"🚨 {len(failed_nodes)} dbt models failed:")
+#                 if failed_nodes:
+#                     logger.error(f"🚨 {len(failed_nodes)} dbt models failed:")
                     
-                    for result in failed_nodes:
-                        node_id = result["unique_id"]
-                        node = manifest["nodes"].get(node_id, {})
-                        model_name = node.get("name", node_id)
-                        error_msg = result.get("message", "Unknown error")
+#                     for result in failed_nodes:
+#                         node_id = result["unique_id"]
+#                         node = manifest["nodes"].get(node_id, {})
+#                         model_name = node.get("name", node_id)
+#                         error_msg = result.get("message", "Unknown error")
                         
-                        logger.error(f"   ❌ {model_name}: {error_msg}")
+#                         logger.error(f"   ❌ {model_name}: {error_msg}")
                         
-                        # Show compiled SQL for debugging
-                        compiled_path = node.get("compiled_path")
-                        if compiled_path:
-                            compiled_file = tmp_path / compiled_path
-                            if compiled_file.exists():
-                                sql_content = compiled_file.read_text()
-                                sql_preview = sql_content[:500] + "..." if len(sql_content) > 500 else sql_content
-                                logger.error(f"   📄 Compiled SQL preview:\n{sql_preview}")
+#                         # Show compiled SQL for debugging
+#                         compiled_path = node.get("compiled_path")
+#                         if compiled_path:
+#                             compiled_file = tmp_path / compiled_path
+#                             if compiled_file.exists():
+#                                 sql_content = compiled_file.read_text()
+#                                 sql_preview = sql_content[:500] + "..." if len(sql_content) > 500 else sql_content
+#                                 logger.error(f"   📄 Compiled SQL preview:\n{sql_preview}")
                 
-                logger.error(f"🔍 dbt project preserved for debugging: {tmp_path}")
+#                 logger.error(f"🔍 dbt project preserved for debugging: {tmp_path}")
                 
-            except Exception as parse_error:
-                logger.error(f"❌ Failed to parse dbt results: {parse_error}")
+#             except Exception as parse_error:
+#                 logger.error(f"❌ Failed to parse dbt results: {parse_error}")
         
-        else:
-            logger.error("❌ dbt results files not found")
-            logger.error(f"🔍 Temp project: {tmp_path}")
+#         else:
+#             logger.error("❌ dbt results files not found")
+#             logger.error(f"🔍 Temp project: {tmp_path}")
         
-        raise RuntimeError(f"dbt transformations failed: {str(e)}")
-    finally:
-        # Only clean on success
-        if (tmp_path / "target" / "run_results.json").exists():
-            rr = json.loads((tmp_path / "target" / "run_results.json").read_text())
-            statuses = {r["status"] for r in rr.get("results", [])}
-            if statuses == {"success"}:
-                shutil.rmtree(tmp_path, ignore_errors=True)
-            else:
-                logger.warning("❗ Leaving temp project at %s for debugging", tmp_path)
+#         raise RuntimeError(f"dbt transformations failed: {str(e)}")
+#     finally:
+#         # Only clean on success
+#         if (tmp_path / "target" / "run_results.json").exists():
+#             rr = json.loads((tmp_path / "target" / "run_results.json").read_text())
+#             statuses = {r["status"] for r in rr.get("results", [])}
+#             if statuses == {"success"}:
+#                 shutil.rmtree(tmp_path, ignore_errors=True)
+#             else:
+#                 logger.warning("❗ Leaving temp project at %s for debugging", tmp_path)
 
-    return {"raw_models": raw_models, "business_models": silver_models}
+#     return {"silver_models": silver_models}
+
 
 # ---------------- DATA QUALITY CHECKS ---------------- #
-def check_transformed_data(**context):
-    """Perform comprehensive data quality checks on transformed LeafLink data."""
-    logger.info("🔍 Performing enhanced LeafLink data quality checks...")
-    
-    try:
-        wh = config['warehouse']['active_warehouse']
-        
-        if wh == 'clickhouse':
-            return check_clickhouse_data_quality_enhanced()
-        else:
-            logger.warning(f"⚠️ Data quality checks not implemented for {wh}")
-            return {'status': 'skipped', 'reason': f'Not implemented for {wh}'}
-        
-    except Exception as e:
-        logger.error(f"❌ Quality checks failed: {e}")
-        raise
+# CHANGE 2: Replace the data quality check function 
+def skip_data_quality_checks(**context):
+    """Skip data quality checks - handled by unified silver DAG."""
+    logger.info("⏭️ Skipping data quality checks (handled by unified silver DAG)")
+    return {"status": "skipped", "reason": "Quality checks moved to unified DAG"}
 
 def check_clickhouse_data_quality_enhanced():
     """Enhanced ClickHouse data quality checks for LeafLink."""
@@ -1273,7 +1304,7 @@ def monitor_warehouse_health(**context):
 
 # ---------------- PIPELINE SUMMARY ---------------- #
 def send_pipeline_success_notification(**context):
-    """Send comprehensive pipeline success notification."""
+    """Send extraction-only pipeline success notification."""
     try:
         # Get results from previous tasks
         total_records = context['task_instance'].xcom_pull(
@@ -1286,19 +1317,9 @@ def send_pipeline_success_notification(**context):
             key='extraction_results'
         ) or {}
         
-        dbt_results = context['task_instance'].xcom_pull(
-            task_ids='run_dbt_transformations', 
-            key='return_value'
-        ) or {}
-        
         validation_results = context['task_instance'].xcom_pull(
             task_ids='validate_extraction_integrity', 
             key='validation_results'
-        ) or {}
-        
-        quality_results = context['task_instance'].xcom_pull(
-            task_ids='check_data_quality', 
-            key='return_value'
         ) or {}
         
         warehouse_health = context['task_instance'].xcom_pull(
@@ -1306,22 +1327,14 @@ def send_pipeline_success_notification(**context):
             key='warehouse_health'
         ) or {}
         
-        # Create comprehensive summary
+        # Create extraction-focused summary
         summary = f"""
-        🎉 LEAFLINK PIPELINE SUCCESS SUMMARY 🎉
+        🎉 LEAFLINK EXTRACTION SUCCESS SUMMARY 🎉
         
         📊 Data Extraction:
         - Total records loaded: {total_records:,}
         - Endpoints processed: {len(extraction_results)}
         - Validation status: {validation_results.get('overall_status', 'Unknown')}
-        
-        🔧 dbt Transformations:
-        - Raw models executed: {len(dbt_results.get('raw_models', []))}
-        - Business models executed: {len(dbt_results.get('business_models', []))}
-        
-        🔍 Data Quality:
-        - Status: {quality_results.get('overall_status', 'Unknown')}
-        - Issues detected: {len(quality_results.get('issues', []))}
         
         🏥 Warehouse Health:
         - Status: {warehouse_health.get('overall_status', 'Unknown')}
@@ -1342,13 +1355,15 @@ def send_pipeline_success_notification(**context):
             for warning in validation_results['warnings'][:5]:  # Show first 5
                 summary += f"        - {warning}\n"
         
+        summary += "\n💡 Silver transformations handled by unified silver DAG"
+        
         logger.info(summary)
         
         # Send email notification
         send_success_email(context)
         
-        logger.info("✅ Comprehensive pipeline success notification sent")
-        return "Success notification sent"
+        logger.info("✅ Extraction pipeline success notification sent")
+        return "Extraction success notification sent"
         
     except Exception as e:
         logger.error(f"❌ Failed to send pipeline notification: {e}")
@@ -1405,20 +1420,19 @@ with dag:
     
     # Transformation task
     transform_task = PythonOperator(
-        task_id='run_dbt_transformations',
-        python_callable=run_dbt_transformations,
+        task_id='skip_dbt_transformations',  # Renamed for clarity
+        python_callable=skip_dbt_transformations,  # Use skip function
         provide_context=True,
-        retries=1,
-        retry_delay=timedelta(minutes=3),
+        retries=0,  # No retries needed for skip
         trigger_rule=TriggerRule.ALL_SUCCESS
     )
     
     # Quality check task
     quality_check_task = PythonOperator(
-        task_id='check_data_quality',
-        python_callable=check_transformed_data,
+        task_id='skip_data_quality_checks',  # Renamed for clarity
+        python_callable=skip_data_quality_checks,  # Use skip function
         provide_context=True,
-        retries=1,
+        retries=0,  # No retries needed for skip
         trigger_rule=TriggerRule.ALL_SUCCESS
     )
     
@@ -1437,14 +1451,15 @@ with dag:
         trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS
     )
 
-# Define task dependencies with proper error handling
-start_task >> test_task >> extraction_task >> validation_task >> finalize_state_task
+start_task >> test_task >> extraction_task >> validation_task >> finalize_state_task >> monitor_task >> transform_task >> quality_check_task >> success_notification_task >> end_task
+# # Define task dependencies with proper error handling
+# start_task >> test_task >> extraction_task >> validation_task >> finalize_state_task
 
-# Parallel execution after state finalization
-finalize_state_task >> [monitor_task, transform_task]
+# # Parallel execution after state finalization
+# finalize_state_task >> [monitor_task, transform_task]
 
-# Quality checks depend on transformations
-transform_task >> quality_check_task
+# # Quality checks depend on transformations
+# transform_task >> quality_check_task
 
-# Success notification waits for all tasks to complete
-[monitor_task, quality_check_task] >> success_notification_task >> end_task
+# # Success notification waits for all tasks to complete
+# [monitor_task, quality_check_task] >> success_notification_task >> end_task
