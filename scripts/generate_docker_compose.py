@@ -48,6 +48,9 @@ def generate_docker_compose():
             # Leaflink Configuration
             'LEAFLINK_API_KEY=${LEAFLINK_API_KEY}',
             'LEAFLINK_COMPANY_ID=${LEAFLINK_COMPANY_ID}',
+            # Google Spreadsheet Configuration
+            'GOOGLE_SPREADSHEET_ID=${GOOGLE_SPREADSHEET_ID}',
+            'GOOGLE_APPLICATION_CREDENTIALS=${GOOGLE_APPLICATION_CREDENTIALS}',
             # Warehouse Configuration
             f'ACTIVE_WAREHOUSE={warehouse}',
             'DATABASE_HOST=${DATABASE_HOST}',
@@ -80,8 +83,8 @@ def generate_docker_compose():
             './config:/opt/airflow/config',
             './scripts:/opt/airflow/scripts',
             './extractors:/opt/airflow/extractors',
-            './macros:/opt/airflow/macros'
-
+            './macros:/opt/airflow/macros',
+            './google-sheets-api.json:/opt/airflow/credentials/google-sheets-api.json:ro'
         ]
         
         # Package installation command

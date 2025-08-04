@@ -33,3 +33,7 @@ data/processed/
 # OS
 .DS_Store
 Thumbs.dbgoogle-sheets-api.json
+
+google-sheets-api.json
+
+data-pipeline/

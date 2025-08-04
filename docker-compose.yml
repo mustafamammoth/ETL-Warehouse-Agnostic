@@ -65,6 +65,8 @@ services:
       - REPSLY_PASSWORD=${REPSLY_PASSWORD}
       - LEAFLINK_API_KEY=${LEAFLINK_API_KEY}
       - LEAFLINK_COMPANY_ID=${LEAFLINK_COMPANY_ID}
+      - GOOGLE_SPREADSHEET_ID=${GOOGLE_SPREADSHEET_ID}
+      - GOOGLE_APPLICATION_CREDENTIALS=${GOOGLE_APPLICATION_CREDENTIALS}
       - ACTIVE_WAREHOUSE=clickhouse
       - DATABASE_HOST=${DATABASE_HOST}
       - DATABASE_PORT=${DATABASE_PORT}
@@ -93,6 +95,7 @@ services:
       - ./scripts:/opt/airflow/scripts
       - ./extractors:/opt/airflow/extractors
       - ./macros:/opt/airflow/macros
+      - ./google-sheets-api.json:/opt/airflow/credentials/google-sheets-api.json:ro
     user: "${AIRFLOW_UID:-50000}:0"
     entrypoint: /bin/bash
     command: |

@@ -1,0 +1,402 @@
+# google_sheets.yml - Google Sheets configuration for production reliability
+
+dag:
+  dag_id: "google_sheets_extract"
+  description: "Extract from Google Sheets with individual sheet scheduling"
+  owner: "data-team"
+  # DAG runs every hour to check if any sheets need extraction
+  schedule_interval: "0 * * * *"     # Hourly - will check individual sheet schedules
+  max_active_runs: 1                 # CRITICAL: Prevent concurrent runs
+  start_date: "2025-06-30"
+  retries: 1
+  retry_delay_minutes: 10
+  email_on_failure: true
+  email_on_retry: false
+  email_on_success: true
+  tags:
+    - "google_sheets"
+    - "extract"
+    - "spreadsheet"
+    - "scheduled"
+    - "production"
+
+notifications:
+  email:
+    failure_recipients:
+      - "mustafa.zaki@mammoth.org"
+    success_recipients:
+      - "mustafa.zaki@mammoth.org"
+    retry_recipients:
+      - "mustafa.zaki@mammoth.org"
+
+google_sheets:
+  # Spreadsheet ID from environment variable for security and flexibility
+  # Set via: GOOGLE_SPREADSHEET_ID=1A2B3C4D5E6F7G8H9I0J...
+  spreadsheet_id: "${GOOGLE_SPREADSHEET_ID}"
+  
+  # Alternative: You could also use the full URL and extract ID programmatically
+  # spreadsheet_url: "${GOOGLE_SPREADSHEET_URL}"  # Full Google Sheets URL
+  
+  # Google credentials path set via: GOOGLE_APPLICATION_CREDENTIALS
+  # This should point to your service account JSON file
+  
+  # Connection settings
+  connection:
+    timeout_seconds: 60
+    max_retries: 3
+    backoff_factor: 2.0
+
+extraction:
+  mode: "production"  # or "testing"
+  force_extract_all: true    # Change to true for testing
+  
+  testing:
+    max_records_per_sheet: 100
+  production:
+    max_records_per_sheet: null # No limit in production
+  
+  # Sheet configurations - YOUR ACTUAL TABS
+  sheets:
+    # RPM Sheet - Full Refresh, twice daily (morning + after cutoff)
+    "RPM_SHEETS":
+      enabled: true
+      full_refresh: true              # Complete data replacement
+      range: "RPM_SHEETS!A:Z"          # Adjust range as needed
+      skip_rows: 0                    # Skip header rows if needed
+      priority: "high"
+      schedule:
+        cron: "0 6,18 * * *"          # 6 AM and 6 PM daily (adjust times as needed)
+      description: "RPM Sheets - twice daily full refresh"
+      
+    # RPM Details - Full Refresh, twice daily (morning + after cutoff)  
+    "RPM_DETAILS":
+      enabled: true
+      full_refresh: true              # Complete data replacement
+      range: "RPM_DETAILS!A:Z"        # Adjust range as needed
+      skip_rows: 0
+      priority: "high"
+      schedule:
+        cron: "0 6,18 * * *"          # 6 AM and 6 PM daily (adjust times as needed)
+      description: "RPM Details - twice daily full refresh"
+      
+    # DCC - Append (track when licenses initially added)
+    "DCC":
+      enabled: true
+      full_refresh: false             # Append mode - but you mentioned deleting entire table?
+      # Note: You mentioned "delete entire table and re-add" - that's actually full_refresh: true
+      # If you want to track initial add dates, you might need full_refresh: true with date tracking
+      range: "DCC!A:Z"                # Adjust range as needed
+      skip_rows: 0
+      priority: "high"
+      schedule:
+        cron: "0 8 * * *"             # Daily at 8 AM (adjust as needed)
+      description: "DCC licenses - append to track initial add dates"
+      
+    # Metrc - Full Refresh (license removal tracking critical)
+    "METRC":
+      enabled: true
+      full_refresh: true              # MUST be full refresh to detect removals
+      range: "Metrc!A:Z"              # Adjust range as needed
+      skip_rows: 0
+      priority: "high"
+      schedule:
+        cron: "0 9 * * *"             # Daily at 9 AM (adjust as needed)
+      description: "Metrc licenses - full refresh to detect removals"
+      
+    # Goals - Full Refresh, monthly between 14th-18th
+    "GOALS_MAMMOTH":
+      enabled: true
+      full_refresh: true              # Complete replacement
+      range: "GOALS_MAMMOTH!A:Z"              # Adjust range as needed
+      skip_rows: 0
+      priority: "medium"
+      schedule:
+        cron: "0 10 14-18 * *"        # Daily at 10 AM between 14th-18th of month
+      description: "GOALS_MAMMOTH - monthly update between 14th-18th"
+      
+    # Goals - Full Refresh, monthly between 14th-18th
+    "GOALS_SEQUOIA":
+      enabled: true
+      full_refresh: true              # Complete replacement
+      range: "GOALS_SEQUOIA!A:Z"              # Adjust range as needed
+      skip_rows: 0
+      priority: "medium"
+      schedule:
+        cron: "0 10 14-18 * *"        # Daily at 10 AM between 14th-18th of month
+      description: "GOALS_SEQUOIA - monthly update between 14th-18th"
+
+    # Non-CA Products - Full Refresh, updated as needed
+    "ALT_STATE_PRODUCTS":
+      enabled: true
+      full_refresh: true              # Complete replacement
+      range: "ALT_STATE_PRODUCTS!A:Z"    # Adjust range as needed
+      skip_rows: 0
+      priority: "medium"
+      schedule:
+        cron: "0 11 * * *"            # Daily at 11 AM (or adjust frequency as needed)
+      description: "Non-CA Products - updated as needed"
+      
+    # Manual Mapping - Append (new records added to bottom)
+    "MANUAL_MAPPING":
+      enabled: true
+      full_refresh: false             # Append mode for new records
+      range: "MANUAL_MAPPING!A:Z"     # Adjust range as needed
+      skip_rows: 0
+      priority: "medium"
+      schedule:
+        cron: "0 12 * * *"            # Daily at 12 PM (adjust as needed)
+      description: "Manual Mapping - append new records"
+      # Note: For "cells edited since last pull" you'd need more complex logic
+      
+    # Budgets By Code - Full Refresh, monthly between 14th-18th
+    "BUDGETS_BY_CODE":
+      enabled: true
+      full_refresh: true              # Complete replacement
+      range: "BUDGETS_BY_CODE!A:Z"    # Adjust range as needed
+      skip_rows: 0
+      priority: "medium"
+      schedule:
+        cron: "0 13 14-18 * *"        # Daily at 1 PM between 14th-18th of month
+      description: "Budgets By Code - monthly update between 14th-18th"
+      
+    # Budgets By Category - Full Refresh, monthly between 14th-18th
+    "BUDGETS_BY_CATEGORY":
+      enabled: true
+      full_refresh: true              # Complete replacement
+      range: "BUDGETS_BY_CATEGORY!A:Z" # Adjust range as needed
+      skip_rows: 0
+      priority: "medium"
+      schedule:
+        cron: "0 14 14-18 * *"        # Daily at 2 PM between 14th-18th of month
+      description: "Budgets By Category - monthly update between 14th-18th"
+      
+    # Budget Focus Lines - Full Refresh, updated as needed
+    "BUDGET_FOCUS_LINES":
+      enabled: true
+      full_refresh: true              # Complete replacement
+      range: "BUDGET_FOCUS_LINES!A:Z" # Adjust range as needed
+      skip_rows: 0
+      priority: "medium"
+      schedule:
+        cron: "0 15 * * *"            # Daily at 3 PM (adjust frequency as needed)
+      description: "Budget Focus Lines - updated as needed"
+
+warehouse:
+  active_warehouse: "clickhouse"
+  schemas:
+    bronze_schema: "bronze_spreadsheet"
+    silver_schema: "silver_spreadsheet"
+    raw_schema: "bronze_spreadsheet"      # Alias for compatibility
+    staging_schema: "silver_spreadsheet"  # Alias for compatibility
+  
+  # Warehouse-specific settings
+  clickhouse:
+    chunk_size: 1000               # Batch size for large inserts
+    connection_pool_size: 5
+    max_retries: 3
+    partition_strategy: "by_date"   # Partition tables by extraction date
+
+# Feature flags for controlled rollout
+features:
+  enable_parallel_extraction: false      # DISABLED: Sequential for reliability
+  enable_advanced_monitoring: true       # ENABLED: Better observability
+  enable_auto_recovery: false            # DISABLED: Manual intervention preferred
+  
+  # Sheet-specific features
+  sheets:
+    validate_column_consistency: true     # Check if columns change between runs
+    detect_data_type_changes: true       # Alert on data type changes
+    enable_smart_schema_evolution: true  # Automatically add new columns
+    track_row_count_changes: true        # Monitor significant row count changes
+
+# Maintenance and monitoring
+maintenance:
+  cleanup:
+    delete_old_logs: true
+    log_retention_days: 14            # 2 weeks
+    
+  health_checks:
+    verify_spreadsheet_accessible: true
+    check_warehouse_connectivity: true
+    validate_sheet_permissions: true
+    
+  monitoring:
+    send_daily_health_report: true
+    alert_on_extraction_failures: true
+    warehouse_health_check_enabled: true
+    alert_on_schema_changes: true     # Alert when sheet structure changes
+
+# Google Sheets-specific configurations
+google_sheets_specific:
+  # Sheet scheduling examples and documentation
+  scheduling:
+    # Common cron patterns for reference:
+    examples:
+      every_minute: "* * * * *"
+      every_5_minutes: "*/5 * * * *"
+      every_15_minutes: "*/15 * * * *"
+      every_30_minutes: "*/30 * * * *"
+      hourly: "0 * * * *"
+      daily_at_6am: "0 6 * * *"
+      daily_at_midnight: "0 0 * * *"
+      twice_daily: "0 6,18 * * *"
+      weekdays_only: "0 9 * * 1-5"
+      weekends_only: "0 10 * * 0,6"
+      weekly_monday: "0 8 * * 1"
+      first_of_month: "0 2 1 * *"
+      15th_of_month: "0 4 15 * *"
+      last_day_of_month: "0 23 28-31 * *"
+      quarterly: "0 9 1 1,4,7,10 *"
+      yearly: "0 0 1 1 *"
+      business_hours: "0 9-17 * * 1-5"
+      mid_month_range: "0 8 14-18 * *"
+      
+    # Special cases documentation:
+    special_cases:
+      # Monthly between 14th-18th: "0 8 14-18 * *"
+      # First Sunday of month: "0 3 1-7 * 0" 
+      # Last Friday of month: "0 17 * * 5" with additional logic
+      # Every 2 hours during business: "0 9-17/2 * * 1-5"
+      # Weekend processing: "0 6 * * 6,0"
+  # Sheet processing settings
+  processing:
+    # Data validation
+    validate_headers: true            # Check if headers match expected format
+    detect_merged_cells: true         # Alert on merged cells that might cause issues
+    handle_formulas: "values_only"    # values_only, formulas, both
+    
+    # Performance settings
+    max_rows_per_sheet: 100000        # Limit to prevent memory issues
+    max_columns_per_sheet: 100        # Reasonable column limit
+    
+  # Full refresh vs incremental guidelines
+  refresh_strategies:
+    # When to use full refresh:
+    full_refresh_use_cases:
+      - "Reference data that changes completely"
+      - "Monthly/periodic reports that replace previous data"
+      - "Configuration data"
+      - "Employee directories"
+      - "Product catalogs"
+      
+    # When to use incremental:
+    incremental_use_cases:
+      - "Transaction logs"
+      - "Event tracking"
+      - "Audit logs"
+      - "Customer feedback"
+      - "Time-series data"
+      
+  # Error handling and recovery
+  error_handling:
+    max_consecutive_failures: 3
+    failure_backoff_minutes: 30      # Conservative backoff
+    skip_sheet_on_repeated_failure: true
+    
+    # Google Sheets-specific error recovery
+    api_error_recovery:
+      retry_on_quota_exceeded: true
+      retry_on_timeout: true
+      retry_on_server_error: true
+      max_retries_per_sheet: 3
+      
+    # Data quality checks
+    data_quality:
+      check_empty_sheets: true        # Alert on completely empty sheets
+      check_header_changes: true      # Alert when headers change
+      validate_data_types: false      # Basic data type validation
+      check_row_count_variance: true  # Alert on major row count changes
+      max_row_count_change_percent: 50 # Alert if >50% change in row count
+
+# Performance and reliability settings  
+performance:
+  memory_management:
+    max_dataframe_size_mb: 500        # Limit DataFrame memory usage
+    enable_chunked_processing: true
+    chunk_size_rows: 1000
+    
+  connection_management:
+    connection_timeout_seconds: 60
+    max_connection_retries: 3
+    
+  # Monitoring and alerting
+  monitoring:
+    log_memory_usage: true
+    log_processing_times: true
+    alert_on_slow_performance: true
+    performance_baseline_minutes: 15  # Alert if pipeline takes >15min
+
+# Security and compliance
+security:
+  data_privacy:
+    log_sensitive_fields: false       # Don't log PII in logs
+    mask_credentials: true            # Mask credentials in logs
+    
+  audit:
+    log_all_api_calls: false         # Performance vs audit trade-off
+    log_data_access: true
+    retention_days: 90
+
+# Business-specific settings
+business_logic:
+  sheets:
+    # Data validation rules
+    validation_rules:
+      check_required_columns: true    # Ensure critical columns exist
+      validate_date_formats: true     # Check date format consistency
+      check_numeric_ranges: false     # Validate numeric data ranges
+      
+    # Quality thresholds
+    quality_thresholds:
+      min_rows_threshold: 1           # Minimum rows expected
+      max_empty_cells_percent: 20     # Alert if >20% cells are empty
+      duplicate_row_threshold: 5      # Alert if >5% rows are duplicates
+      
+  # Sheet-specific business rules
+  sheet_rules:
+    sales_data:
+      required_columns: ["date", "amount", "customer"]
+      validate_amounts: true
+      check_future_dates: false
+      
+    transaction_log:
+      required_columns: ["timestamp", "transaction_id", "amount"]
+      validate_amounts: true
+      check_duplicate_transactions: true
+      
+    employee_directory:
+      required_columns: ["employee_id", "name", "department"]
+      check_duplicate_employees: true
+      validate_email_format: false
+
+# Advanced configuration
+advanced:
+  # Schema evolution settings
+  schema_evolution:
+    auto_add_columns: true            # Automatically add new columns
+    preserve_column_order: false      # Don't enforce column order
+    alert_on_column_removal: true     # Alert when columns disappear
+    
+  # Partitioning strategy
+  partitioning:
+    # Full refresh tables: partition by extraction date
+    full_refresh_partition: "by_extraction_date"
+    
+    # Incremental tables: partition by extraction date for time-based queries
+    incremental_partition: "by_extraction_date"
+    
+    # Custom partitioning for specific sheets
+    custom_partitions:
+      transaction_log: "by_month"     # Partition by month for better performance
+      user_events: "by_week"          # Partition by week
+      
+  # Data retention (for incremental tables)
+  retention:
+    default_retention_days: 1095      # 3 years default
+    
+    # Sheet-specific retention
+    sheet_retention:
+      audit_log: 2555                 # 7 years for audit
+      transaction_log: 1825           # 5 years for transactions  
+      user_events: 365                # 1 year for events
+      customer_feedback: 1095         # 3 years for feedback
