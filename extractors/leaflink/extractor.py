@@ -119,7 +119,7 @@ LEAFLINK_ENDPOINTS = {
         'incremental_field': None,  # FIXED: API doesn't actually support order__modified filters
         'incremental_strategy': 'offset_based',  # FIXED: Use offset-based since date filters don't work
         'priority': 'high',
-        'supports_company_scope': False,
+        'supports_company_scope': True,
         'date_filters': {},  # FIXED: Remove date filters that don't work
         'depends_on': ['orders_received'],
         'include_children': ['product', 'batch'],
@@ -136,7 +136,7 @@ LEAFLINK_ENDPOINTS = {
         'next_field': 'next',
         'incremental_field': 'modified',  # CONFIRMED: API supports modified filters
         'priority': 'high',
-        'supports_company_scope': False,
+        'supports_company_scope': True,
         'date_filters': {
             'modified__gte': 'incremental_start',  # CORRECT: API parameter exists
             'modified__lte': 'incremental_end'     # CORRECT: API parameter exists
@@ -202,7 +202,7 @@ LEAFLINK_ENDPOINTS = {
         'next_field': 'next',
         'incremental_field': None,  # Reference data - uses global refresh interval
         'priority': 'high',
-        'supports_company_scope': False,
+        'supports_company_scope': True,
         'date_filters': {},
         'include_children': ['brand'],
         'fields_add': ['menu_position']
@@ -268,7 +268,7 @@ LEAFLINK_ENDPOINTS = {
         'next_field': 'next',
         'incremental_field': 'modified',  # CONFIRMED: API supports modified filters
         'priority': 'high',
-        'supports_company_scope': False,
+        'supports_company_scope': True,
         'date_filters': {
             'modified__gte': 'incremental_start',  # CORRECT: API parameter exists
             'modified__lte': 'incremental_end'     # CORRECT: API parameter exists
@@ -385,7 +385,7 @@ LEAFLINK_ENDPOINTS = {
         'next_field': 'next',
         'incremental_field': None,  # License info changes infrequently
         'priority': 'medium',
-        'supports_company_scope': False,
+        'supports_company_scope': True,
         'date_filters': {},
         'depends_on': ['companies'],
         'include_children': [],
@@ -401,7 +401,7 @@ LEAFLINK_ENDPOINTS = {
         'next_field': 'next',
         'incremental_field': None,  # Reference data - uses global refresh interval
         'priority': 'low',
-        'supports_company_scope': False,
+        'supports_company_scope': True,
         'date_filters': {},
         'include_children': [],
         'fields_add': []
@@ -416,7 +416,7 @@ LEAFLINK_ENDPOINTS = {
         'next_field': 'next',
         'incremental_field': None,  # Brand info changes infrequently
         'priority': 'medium',
-        'supports_company_scope': False,
+        'supports_company_scope': True,
         'date_filters': {},
         'depends_on': ['companies'],
         'include_children': [],
@@ -433,7 +433,7 @@ LEAFLINK_ENDPOINTS = {
         'incremental_field': None,  # Promocodes change occasionally but no date filters available
         'incremental_strategy': 'offset_based',  # Use offset-based for moderate frequency changes
         'priority': 'medium',
-        'supports_company_scope': False,
+        'supports_company_scope': True,
         'date_filters': {},
         'depends_on': ['brands'],
         'include_children': [],
@@ -450,7 +450,7 @@ LEAFLINK_ENDPOINTS = {
         'incremental_field': None,  # Reports are generated periodically
         'incremental_strategy': 'offset_based',  # Use offset-based for new reports
         'priority': 'low',
-        'supports_company_scope': False,
+        'supports_company_scope': True,
         'date_filters': {},
         'depends_on': ['companies'],
         'include_children': [],
@@ -555,6 +555,8 @@ def create_authenticated_session():
         raise
 
 # ---------------- UTILITIES ---------------- #
+# Enhanced flatten_leaflink_record function with specific column handling
+# Add this to replace the existing flatten_leaflink_record function in extractor.py
 
 def flatten_leaflink_record(record: Dict[str, Any]) -> Dict[str, Any]:
     """Flatten LeafLink record structure with special handling for nested objects and enhanced JSON flattening."""
@@ -1082,250 +1084,123 @@ def create_table_from_dataframe(client, full_table, df):
         logger.error(f"❌ Failed to create table {full_table}: {e}")
         raise
 
-def load_dataframe_to_warehouse_verified(df, endpoint_key, extracted_at):
-    """Load DataFrame with comprehensive verification, duplicate prevention, and schema evolution support."""
+def load_dataframe_to_warehouse_verified(df, endpoint_key, extracted_at, raw_schema):
+    """
+    Same verification logic, but the ClickHouse schema is passed in by caller
+    (one schema per company).
+    """
     import clickhouse_connect
-    
-    raw_schema = CONFIG['warehouse']['schemas']['raw_schema']
-    
     host = os.getenv('CLICKHOUSE_HOST')
     port = int(os.getenv('CLICKHOUSE_PORT', 8443))
     database = os.getenv('CLICKHOUSE_DATABASE', 'default')
     username = os.getenv('CLICKHOUSE_USER', 'default')
     password = os.getenv('CLICKHOUSE_PASSWORD')
-    
-    if not all([host, password]):
-        raise ValueError("ClickHouse connection parameters missing")
-    
+
     client = clickhouse_connect.get_client(
         host=host, port=port, username=username, password=password,
         database=database, secure=True
     )
-    
+
     try:
         if raw_schema != 'default':
-            try:
-                client.command(f"CREATE DATABASE IF NOT EXISTS `{raw_schema}`")
-                logger.info(f"✅ Database {raw_schema} ready")
-            except Exception as db_error:
-                logger.error(f"❌ Failed to create database {raw_schema}: {db_error}")
-                raise ValueError(f"Cannot access or create database {raw_schema}: {db_error}")
-        
-        table_name = f"raw_{endpoint_key}"
-        full_table = f"`{raw_schema}`.`{table_name}`"
-        extraction_timestamp = extracted_at.isoformat()
-        
-        if table_exists(client, full_table):
-            duplicate_check = client.query(f"""
-                SELECT count() 
-                FROM {full_table} 
-                WHERE _extracted_at = '{extraction_timestamp}'
-            """)
-            
-            existing_count = duplicate_check.result_rows[0][0]
-            if existing_count > 0:
-                logger.warning(f"⚠️ DUPLICATE PREVENTION: {existing_count} records already exist")
-                logger.warning(f"   Timestamp: {extraction_timestamp}")
-                logger.warning(f"   Skipping load to prevent duplicates")
+            client.command(f"CREATE DATABASE IF NOT EXISTS `{raw_schema}`")
+            logger.info(f"✅ Database {raw_schema} ready")
+
+        table = f"`{raw_schema}`.`raw_{endpoint_key}`"
+        ts = extracted_at.isoformat()
+
+        if table_exists(client, table):
+            dup = client.query(f"SELECT count() FROM {table} WHERE _extracted_at = '{ts}'").result_rows[0][0]
+            if dup:
+                logger.warning(f"⚠️ duplicates – skipping load")
                 return 0
-            
-            logger.info(f"✅ No duplicates found for {extraction_timestamp}")
-            
-            existing_columns = get_table_columns(client, full_table)
-            add_missing_columns(client, full_table, df, existing_columns)
-            
+            add_missing_columns(client, table, df, get_table_columns(client, table))
         else:
-            create_table_from_dataframe(client, full_table, df)
-        
-        unique_timestamps = df['_extracted_at'].nunique()
-        if unique_timestamps != 1:
-            raise ValueError(f"Data integrity error: {unique_timestamps} different timestamps")
-        
-        actual_timestamp = df['_extracted_at'].iloc[0]
-        if actual_timestamp != extraction_timestamp:
-            raise ValueError(f"Timestamp mismatch: expected {extraction_timestamp}, got {actual_timestamp}")
-        
+            create_table_from_dataframe(client, table, df)
+
         df_clean = df.copy()
-        df_clean.columns = [col.replace(' ', '_').replace('-', '_') for col in df_clean.columns]
-        df_str = df_clean.astype(str).replace(['nan', 'None', 'null', '<NA>'], '')
-        
-        client.insert_df(table=full_table, df=df_str)
-        
-        verification_check = client.query(f"""
-            SELECT count() 
-            FROM {full_table} 
-            WHERE _extracted_at = '{extraction_timestamp}'
-        """)
-        
-        actual_loaded = verification_check.result_rows[0][0]
-        
-        if actual_loaded != len(df):
-            raise ValueError(f"Load verification failed: expected {len(df)}, loaded {actual_loaded}")
-        
-        logger.info(f"✅ Load verified: {actual_loaded} records")
-        return actual_loaded
-        
-    except Exception as e:
-        logger.error(f"❌ Warehouse load failed: {e}")
-        raise
+        df_clean.columns = [c.replace(' ', '_').replace('-', '_') for c in df_clean.columns]
+        df_clean = df_clean.astype(str).replace(['nan', 'None', 'null', '<NA>'], '')
+        client.insert_df(table=table, df=df_clean)
+
+        rows = client.query(f"SELECT count() FROM {table} WHERE _extracted_at = '{ts}'").result_rows[0][0]
+        if rows != len(df):
+            raise ValueError(f"load mismatch {rows}/{len(df)}")
+
+        logger.info(f"✅ loaded {rows} rows into {table}")
+        return rows
     finally:
         client.close()
 
-# ---------------- PAGINATION + FETCH WITH ERROR HANDLING (UPDATED FOR INCREMENTAL STRATEGIES) ---------------- #
-def get_paginated_data(session, endpoint_config, endpoint_name):
-    """Get data from LeafLink endpoint with proper incremental strategy support."""
+
+
+def get_paginated_data(session, endpoint_config, endpoint_name, company_id):
+    """Fetch all pages from a LeafLink endpoint, now company-aware."""
     all_data = []
     base_url = CONFIG['api']['base_url']
     max_retries = 3
-    
-    company_id = os.getenv('LEAFLINK_COMPANY_ID')
-    
+
+    # Build the URL – company-scoped when a company_id is supplied
     if company_id and endpoint_config.get('supports_company_scope'):
         endpoint_url_base = f"{base_url}/companies/{company_id}/{endpoint_config['path']}/"
-        logger.info(f"   Using company-scoped endpoint for company ID: {company_id}")
+        logger.info(f"   Company-scoped → {company_id}")
     else:
         endpoint_url_base = f"{base_url}/{endpoint_config['path']}/"
-        if endpoint_config.get('supports_company_scope'):
-            logger.warning("⚠️ Company ID not provided but endpoint supports company scoping")
-            logger.warning("   Set LEAFLINK_COMPANY_ID environment variable for company-specific data")
-    
-    params = {
-        'limit': endpoint_config['limit']
-    }
-    
-    # Determine incremental strategy and set parameters accordingly
+
+    params = {'limit': endpoint_config['limit']}
     strategy = _get_incremental_strategy(endpoint_name)
-    
+
+    # Date-based incremental
     if strategy == 'date_based':
         start_date, end_date = _get_incremental_date_range(endpoint_name)
         if start_date and end_date:
-            date_filters = endpoint_config.get('date_filters', {})
-            for param_name, date_type in date_filters.items():
-                if date_type == 'incremental_start':
-                    params[param_name] = start_date.isoformat()
-                elif date_type == 'incremental_end':
-                    params[param_name] = end_date.isoformat()
-            logger.info(f"   Using date-based incremental: {start_date.isoformat()} to {end_date.isoformat()}")
-    
-    elif strategy == 'offset_based':
-        start_offset = _get_incremental_offset_range(endpoint_name)
-        logger.info(f"   Using offset-based incremental starting from offset: {start_offset}")
-        # We'll handle offset in the pagination loop
-    
-    elif strategy == 'parent_driven':
-        logger.info(f"   Using parent-driven incremental - will extract all data related to recent parent changes")
-        # Parent-driven endpoints extract all data but rely on parent endpoint's incremental logic
-    
-    else:  # full_refresh
-        logger.info(f"   Using full refresh strategy")
-    
-    # Add include_children and fields_add if specified
-    if endpoint_config.get('include_children'):
-        params['include_children'] = ','.join(endpoint_config['include_children'])
-    
-    if endpoint_config.get('fields_add'):
-        params['fields_add'] = ','.join(endpoint_config['fields_add'])
-    
-    # Initialize offset handling
-    if strategy == 'offset_based':
-        offset = _get_incremental_offset_range(endpoint_name)
-    else:
-        offset = 0
-    
-    page_count = 0
-    max_pages = 1000
+            for p, t in endpoint_config.get('date_filters', {}).items():
+                params[p] = start_date.isoformat() if t == 'incremental_start' else end_date.isoformat()
+            logger.info(f"   Date window → {start_date} … {end_date}")
+
+    # Offset incremental
+    offset = _get_incremental_offset_range(endpoint_name) if strategy == 'offset_based' else 0
     last_successful_offset = offset
-    
-    logger.info(f"   Starting pagination with params: {params}")
-    
-    while page_count < max_pages:
-        page_count += 1
+    page = 0
+
+    while page < 1000:                               # safety-cap
+        page += 1
         params['offset'] = offset
-        
-        logger.info(f"   Page {page_count}: Fetching from {endpoint_url_base} (offset: {offset})")
-        
-        success = False
-        for attempt in range(max_retries):
-            try:
-                response = session.get(endpoint_url_base, params=params, 
-                                     timeout=CONFIG['api']['rate_limiting']['timeout_seconds'])
-                response.raise_for_status()
-                data = response.json()
-                
-                records = data.get(endpoint_config['data_field'], [])
-                total_count = data.get(endpoint_config['total_count_field'], 0)
-                next_url = data.get(endpoint_config['next_field'])
-                
-                logger.info(f"   Retrieved {len(records)} records (total available: {total_count})")
-                logger.info(f"   Total collected so far: {len(all_data)}")
-                
-                if not records:
-                    logger.info(f"   No more records available, stopping pagination")
-                    # For offset-based incremental, update the final offset
-                    if strategy == 'offset_based':
-                        _update_offset(endpoint_name, last_successful_offset)
-                    return all_data
-                
-                all_data.extend(records)
-                last_successful_offset = offset + len(records)
-                
-                if TESTING_MODE and MAX_RECORDS_PER_ENDPOINT and len(all_data) >= MAX_RECORDS_PER_ENDPOINT:
-                    all_data = all_data[:MAX_RECORDS_PER_ENDPOINT]
-                    logger.info(f"   Reached testing limit of {MAX_RECORDS_PER_ENDPOINT} records")
-                    # For offset-based incremental, update offset even in testing mode
-                    if strategy == 'offset_based':
-                        _update_offset(endpoint_name, last_successful_offset)
-                    return all_data
-                
-                if len(records) < endpoint_config['limit'] or not next_url:
-                    logger.info(f"   Reached end of data (got {len(records)} < {endpoint_config['limit']} or no next URL)")
-                    # For offset-based incremental, update the final offset
-                    if strategy == 'offset_based':
-                        _update_offset(endpoint_name, last_successful_offset)
-                    return all_data
-                
-                offset += endpoint_config['limit']
-                smart_rate_limit(response, CONFIG)
-                success = True
+        logger.info(f"   Page {page} (offset {offset})")
+
+        try:
+            response = session.get(endpoint_url_base,
+                                    params=params,
+                                    timeout=CONFIG['api']['rate_limiting']['timeout_seconds'])
+            response.raise_for_status()
+            data = response.json()
+
+            records = data.get(endpoint_config['data_field'], [])
+            if not records:
                 break
-                
-            except requests.exceptions.RequestException as e:
-                logger.warning(f"   Request error on page {page_count}, attempt {attempt + 1}: {e}")
-                if attempt == max_retries - 1:
-                    if page_count == 1:
-                        raise
-                    else:
-                        logger.warning(f"   Giving up on page {page_count} after {max_retries} attempts")
-                        # For offset-based incremental, save progress even on failure
-                        if strategy == 'offset_based' and last_successful_offset > _get_incremental_offset_range(endpoint_name):
-                            _update_offset(endpoint_name, last_successful_offset)
-                        return all_data
-                time.sleep(2 ** attempt)
-            
-            except Exception as e:
-                logger.error(f"   Unexpected error on page {page_count}, attempt {attempt + 1}: {e}")
-                if attempt == max_retries - 1:
-                    logger.error(f"   Giving up on page {page_count} after {max_retries} attempts")
-                    # For offset-based incremental, save progress even on failure
-                    if strategy == 'offset_based' and last_successful_offset > _get_incremental_offset_range(endpoint_name):
-                        _update_offset(endpoint_name, last_successful_offset)
-                    return all_data
-                time.sleep(2 ** attempt)
-        
-        if not success:
-            logger.error(f"   Page {page_count} failed completely, stopping")
-            # For offset-based incremental, save progress even on failure
-            if strategy == 'offset_based' and last_successful_offset > _get_incremental_offset_range(endpoint_name):
-                _update_offset(endpoint_name, last_successful_offset)
+
+            all_data.extend(records)
+            last_successful_offset = offset + len(records)
+
+            if len(records) < endpoint_config['limit'] or not data.get(endpoint_config['next_field']):
+                break
+
+            offset += endpoint_config['limit']
+            smart_rate_limit(response, CONFIG)
+
+        except Exception as e:
+            logger.warning(f"   Retryable error → {e}")
+            if page == 1:
+                raise
             break
-    
-    logger.info(f"✅ {endpoint_name}: Collected {len(all_data)} total records")
-    
-    # For offset-based incremental, save final offset
+
     if strategy == 'offset_based':
         _update_offset(endpoint_name, last_successful_offset)
-    
+
+    logger.info(f"✅ {endpoint_name}: collected {len(all_data)} records")
     return all_data
+
+
 
 # ---------------- STATE MANAGEMENT AFTER SUCCESSFUL LOAD (UPDATED FOR MULTIPLE STRATEGIES) ---------------- #
 def update_state_after_verified_load(endpoint_key, endpoint_config, df, raw_data, extracted_at):
@@ -1387,112 +1262,45 @@ def update_state_after_verified_load(endpoint_key, endpoint_config, df, raw_data
         raise
 
 # ---------------- MAIN EXTRACTION FUNCTION (UPDATED FOR MULTIPLE STRATEGIES) ---------------- #
-def extract_leaflink_endpoint(endpoint_key, **context):
-    """ATOMIC extraction with bulletproof state management and multiple incremental strategies."""
+def extract_leaflink_endpoint(endpoint_key, company_id, raw_schema, **context):
+    """Run a single endpoint for a specific company / schema."""
     if endpoint_key not in ENABLED_ENDPOINTS:
-        logger.warning(f"⚠️ Endpoint {endpoint_key} not enabled")
+        logger.info(f"⏭️ {endpoint_key} disabled")
         return 0
 
-    execution_dt = context.get('logical_date') or _utc_now()
-    endpoint_config = LEAFLINK_ENDPOINTS.get(endpoint_key)
-    
-    if not endpoint_config:
-        logger.error(f"❌ Unknown endpoint: {endpoint_key}")
-        return 0
-
-    # Check if we should skip reference data extraction
     if _should_skip_reference_data_extraction(endpoint_key):
         return 0
 
+    endpoint_cfg = LEAFLINK_ENDPOINTS[endpoint_key]
     strategy = _get_incremental_strategy(endpoint_key)
-    logger.info(f"🔄 ATOMIC extraction for {endpoint_key} using {strategy} strategy")
-    
-    state_backup = None
-    with _STATE_LOCK:
-        state_backup = _STATE_CACHE.copy()
-    
-    logger.info(f"💾 State backed up for rollback safety")
+    logger.info(f"🔄 {endpoint_key} ({strategy}) for company {company_id}")
 
+    state_backup = _STATE_CACHE.copy()
     try:
         session = create_authenticated_session()
-        raw_data = get_paginated_data(session, endpoint_config, endpoint_key)
-
-        if not raw_data:
-            logger.warning(f"⚠️ No data returned for {endpoint_key}")
-            # For reference data and some strategies, still update watermark even if no data
-            if strategy in ['full_refresh', 'offset_based']:
-                if strategy == 'full_refresh':
-                    _update_watermark(endpoint_key, _utc_now())
-                # offset_based already updated in get_paginated_data
-                _save_state()
-                logger.info(f"✅ Updated watermark for {strategy} strategy with no results")
+        raw = get_paginated_data(session, endpoint_cfg, endpoint_key, company_id)
+        if not raw:
             return 0
 
-        flattened = []
-        for i, record in enumerate(raw_data):
-            try:
-                flattened.append(flatten_leaflink_record(record))
-            except Exception as e:
-                logger.warning(f"   Failed to flatten record {i}: {e}")
-                continue
-
-        if not flattened:
-            logger.warning(f"⚠️ No valid records after flattening for {endpoint_key}")
-            # For reference data and some strategies, still update watermark even if no valid data
-            if strategy in ['full_refresh', 'offset_based']:
-                if strategy == 'full_refresh':
-                    _update_watermark(endpoint_key, _utc_now())
-                # offset_based already updated in get_paginated_data
-                _save_state()
-                logger.info(f"✅ Updated watermark for {strategy} strategy with no valid records")
-            return 0
-
-        df = pd.DataFrame(flattened)
+        flat = [flatten_leaflink_record(r) for r in raw]
+        df = pd.DataFrame(flat)
         extracted_at = _utc_now()
         df['_extracted_at'] = extracted_at.isoformat()
         df['_source_system'] = 'leaflink'
         df['_endpoint'] = endpoint_key
 
-        logger.info(f"   📊 Prepared {len(df)} records for warehouse load")
-
-        try:
-            records_loaded = load_dataframe_to_warehouse_verified(df, endpoint_key, extracted_at)
-            
-            if records_loaded == 0:
-                logger.warning(f"⚠️ No records actually loaded for {endpoint_key}")
-                return 0
-                
-            logger.info(f"✅ VERIFIED: {records_loaded} records loaded to warehouse")
-            
-        except Exception as warehouse_error:
-            logger.error(f"❌ WAREHOUSE LOAD FAILED: {warehouse_error}")
-            logger.error("🔄 RESTORING original state (no changes made)")
-            
-            with _STATE_LOCK:
-                _STATE_CACHE.clear()
-                _STATE_CACHE.update(state_backup)
-            
-            raise
-
-        try:
-            update_state_after_verified_load(endpoint_key, endpoint_config, df, raw_data, extracted_at)
-            logger.info("✅ State updated after verified warehouse load")
-            
-        except Exception as state_error:
-            logger.error(f"❌ STATE UPDATE FAILED: {state_error}")
-            logger.warning("⚠️ Data loaded but state may be inconsistent - next run will detect")
-            
-        return records_loaded
+        loaded = load_dataframe_to_warehouse_verified(df, endpoint_key, extracted_at, raw_schema)
+        if loaded:
+            update_state_after_verified_load(endpoint_key, endpoint_cfg, df, raw, extracted_at)
+        return loaded
 
     except Exception as e:
-        logger.error(f"❌ EXTRACTION FAILED for {endpoint_key}: {e}")
-        
-        logger.error("🔄 RESTORING original state due to extraction failure")
-        with _STATE_LOCK:
-            _STATE_CACHE.clear()
-            _STATE_CACHE.update(state_backup)
-        
+        _STATE_CACHE.clear()
+        _STATE_CACHE.update(state_backup)
+        logger.error(f"❌ {endpoint_key} failed → {e}")
         raise
+
+
 
 # ---------------- SCHEDULING AND DEPENDENCIES ---------------- #
 def should_run_endpoint(endpoint_key, execution_dt: datetime, completed_endpoints: set = None):
@@ -1593,50 +1401,28 @@ def finalize_state_after_warehouse_load(context):
     except Exception as e:
         logger.error(f"❌ Failed to finalize state updates: {e}")
 
-def extract_all_endpoints_with_dependencies(**context):
-    """Extract all endpoints respecting dependencies and atomic state management."""
-    logger.info("🚀 Starting coordinated LeafLink extraction...")
-    
-    endpoint_order = get_endpoint_execution_order()
-    total_records = 0
-    extraction_results = {}
-    completed_endpoints = set()
-    
-    for endpoint_key in endpoint_order:
+def extract_all_endpoints_with_dependencies(company_id, raw_schema, **context):
+    """
+    Runs all enabled endpoints for a given company_id / schema, respecting
+    dependencies exactly as before.
+    """
+    logger.info(f"🚀 Extracting ALL endpoints for company {company_id}")
+    order = get_endpoint_execution_order()
+    total, results, done = 0, {}, set()
+
+    for ep in order:
         try:
-            endpoint_config = LEAFLINK_ENDPOINTS.get(endpoint_key, {})
-            dependencies = endpoint_config.get('depends_on', [])
-            strategy = _get_incremental_strategy(endpoint_key)
-            
-            for dep in dependencies:
-                if dep not in completed_endpoints and dep in ENABLED_ENDPOINTS:
-                    logger.warning(f"⚠️ {endpoint_key} dependency {dep} not completed")
-            
-            logger.info(f"📊 Extracting {endpoint_key} using {strategy} strategy...")
-            records = extract_leaflink_endpoint(endpoint_key, **context)
-            total_records += records
-            extraction_results[endpoint_key] = records
-            completed_endpoints.add(endpoint_key)
-            
-            logger.info(f"✅ {endpoint_key}: {records} records loaded")
-            
+            recs = extract_leaflink_endpoint(ep, company_id, raw_schema, **context)
+            total += recs
+            results[ep] = recs
+            done.add(ep)
         except Exception as e:
-            logger.error(f"❌ {endpoint_key} failed: {e}")
-            extraction_results[endpoint_key] = f"Failed: {e}"
-            continue
-    
-    logger.info("📈 LeafLink Extraction Summary:")
-    for endpoint, result in extraction_results.items():
-        if isinstance(result, int):
-            strategy = _get_incremental_strategy(endpoint)
-            logger.info(f"   {endpoint} ({strategy}): {result} records")
-        else:
-            logger.info(f"   {endpoint}: {result}")
-    
-    logger.info(f"✅ Coordinated extraction complete. Total records: {total_records}")
-    
+            results[ep] = f"Failed: {e}"
+            logger.error(f"❌ {ep} failed")
+
+    logger.info(f"✅ Company {company_id}: {total} records")
     return {
-        'total_records': total_records,
-        'extraction_results': extraction_results,
-        'completed_endpoints': list(completed_endpoints)
+        'total_records': total,
+        'extraction_results': results,
+        'completed_endpoints': list(done)
     }

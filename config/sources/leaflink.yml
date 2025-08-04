@@ -5,7 +5,8 @@ dag:
   description: "Extract from LeafLink API and transform with dbt (incremental, production-ready)"
   owner: "data-team"
   schedule:
-    type: "daily"        # Daily runs to capture order changes
+    type: cron        # Daily runs to capture order changes
+    cron_expression: "0 * * * *"
     time: "04:00"        # 4 AM UTC (offset from Repsly to avoid resource conflicts)
     timezone: "UTC"
   max_active_runs: 1     # CRITICAL: Prevent concurrent runs
@@ -128,7 +129,7 @@ warehouse:
   schemas:
     bronze_schema: "bronze_leaflink"
     silver_schema: "silver_leaflink"
-    raw_schema: "bronze_leaflink"      # Alias for compatibility
+    # raw_schema: "bronze_leaflink"      # Alias for compatibility
     staging_schema: "silver_leaflink"  # Alias for compatibility
   
   # Warehouse-specific settings
@@ -137,6 +138,23 @@ warehouse:
     connection_pool_size: 5
     max_retries: 3
     partition_strategy: "by_date"   # Partition tables by extraction date
+
+
+companies:
+  - company_id: 20018               # NY
+    region: ny
+    raw_schema: bronze_leaflink_ny
+    schedule_cron: "0 * * * *"
+  - company_id: 24443               # NJ
+    region: nj
+    raw_schema: bronze_leaflink_nj
+    schedule_cron: "0 * * * *"
+  - company_id: 5423                # CA
+    region: ca
+    raw_schema: bronze_leaflink_ca
+    schedule_cron: "0 * * * *"
+
+
 
 dbt:
   project_dir: "/opt/airflow/dbt"

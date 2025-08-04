@@ -10,7 +10,8 @@ import sys
 import yaml
 import re
 import logging
-
+from croniter import croniter
+import copy
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -22,6 +23,75 @@ sys.path.append('/opt/airflow/config')
 from extractors.leaflink import extractor as leaflink
 
 ENV_PATTERN = re.compile(r'^\$\{([A-Z0-9_]+)\}$')
+
+
+
+
+# ---------- DROP-IN ---------- #
+from croniter import croniter
+import copy
+# ---- DAG-run type shim (works on 2.3 → 2.9) -----------------------------
+try:
+    from airflow.utils.types import DagRunType          # Airflow ≥2.6 / 2.7
+except ImportError:                                     # older / some 2.8 builds
+    from airflow.models.dagrun import DagRunType
+# -------------------------------------------------------------------------
+
+
+def _due_this_run(cron_expr: str, logical_dt: datetime) -> bool:
+    """Return True when cron fires exactly at logical_dt (UTC)."""
+    return croniter(cron_expr, logical_dt - timedelta(seconds=1)).\
+           get_next(datetime) == logical_dt
+
+def _run_company(company_cfg, **context):
+    """Initialise extractor for a single company and run all endpoints."""
+    cfg = copy.deepcopy(config)
+    cfg['warehouse']['schemas']['raw_schema'] = company_cfg['raw_schema']
+    cfg['extraction']['incremental']['state_path'] = (
+        f"/opt/airflow/state/leaflink_{company_cfg['region']}_watermarks.json"
+    )
+    leaflink.init_extractor(cfg)
+    return leaflink.extract_all_endpoints_with_dependencies(
+        company_id=company_cfg['company_id'],
+        raw_schema=company_cfg['raw_schema'],
+        **context
+    )
+
+def run_coordinated_extraction(**context):
+    """
+    * Scheduled runs * → obey each company's schedule_cron.
+    * Manual runs     → run **all** companies, ignoring their cron.
+    """
+    logical_dt = context['logical_date']
+    dag_run     = context['dag_run']
+    manual      = (dag_run.external_trigger or
+                   dag_run.run_type == DagRunType.MANUAL)
+
+    total_rows, combined_results = 0, {}
+
+    for comp in config['companies']:
+        # Skip only when scheduled and not yet due
+        if not manual and not _due_this_run(comp['schedule_cron'], logical_dt):
+            logger.info(f"⏭️  {comp['region'].upper()} not scheduled this tick")
+            continue
+
+        out = _run_company(comp, **context)
+        total_rows += out['total_records']
+        # prefix results with region so validation can pick the right schema
+        combined_results.update({
+            f"{comp['region']}_{k}": v for k, v in out['extraction_results'].items()
+        })
+
+    # push results to XCom for downstream tasks
+    ti = context['task_instance']
+    ti.xcom_push(key='extraction_results', value=combined_results)
+    ti.xcom_push(key='total_records',      value=total_rows)
+
+    logger.info(f"✅ Extraction complete – {total_rows:,} rows total")
+    return total_rows
+# ---------- END DROP-IN ---------- #
+
+
 
 def _sub_env(obj):
     """Substitute environment variables in config."""
@@ -36,299 +106,98 @@ def _sub_env(obj):
     return obj
 
 def validate_extraction_integrity(**context):
-    """Enhanced validation with comprehensive data quality checks."""
+    """
+    Validates each successful extraction. Works with multi-company schemas by
+    inferring the correct ClickHouse database from the endpoint key’s region
+    prefix (e.g.  nj_orders_received  →  bronze_leaflink_nj).
+    """
+    import clickhouse_connect
     logger.info("🔍 Validating LeafLink extraction data integrity...")
-    
-    try:
-        import clickhouse_connect
-        
-        # Get extraction results
-        extraction_results = context['task_instance'].xcom_pull(
-            task_ids='run_coordinated_extraction', 
-            key='extraction_results'
+
+    # pull results produced by run_coordinated_extraction
+    extraction_results = context['task_instance'].xcom_pull(
+        task_ids='run_coordinated_extraction', key='extraction_results'
+    ) or {}
+
+    # map region → raw_schema from leaflink.yml
+    region_to_schema = {
+        c['region']: c['raw_schema'] for c in config.get('companies', [])
+    }
+
+    # keep only successful loads
+    successful = {
+        k: v for k, v in extraction_results.items() if isinstance(v, int) and v > 0
+    }
+    if not successful:
+        logger.warning("⚠️ No successful extractions to validate")
+        return {'status': 'no_successful_extractions'}
+
+    logger.info(f"🔍 Validating {len(successful)} successful extractions")
+
+    # ClickHouse connection
+    client = clickhouse_connect.get_client(
+        host=os.getenv('CLICKHOUSE_HOST'),
+        port=int(os.getenv('CLICKHOUSE_PORT', 8443)),
+        username=os.getenv('CLICKHOUSE_USER', 'default'),
+        password=os.getenv('CLICKHOUSE_PASSWORD'),
+        database=os.getenv('CLICKHOUSE_DATABASE', 'default'),
+        secure=True
+    )
+
+    validation = {'endpoint_results': {}, 'critical_issues': [], 'warnings': []}
+
+    for compound_key, expected_rows in successful.items():
+        # split   nj_orders_received  →  region = nj, ep = orders_received
+        region, endpoint = compound_key.split('_', 1)
+        raw_schema = region_to_schema.get(region)
+        if not raw_schema:
+            validation['warnings'].append(f"{compound_key}: unknown region")
+            continue
+
+        table = f"`{raw_schema}`.`raw_{endpoint}`"
+        try:
+            latest_ts = client.query(
+                f"SELECT max(_extracted_at) FROM {table}"
+            ).result_rows[0][0]
+            actual_rows = client.query(
+                f"SELECT count() FROM {table} WHERE _extracted_at = '{latest_ts}'"
+            ).result_rows[0][0]
+
+            status = "PASS" if actual_rows == expected_rows else "COUNT_MISMATCH"
+            if status != "PASS":
+                validation['critical_issues'].append(
+                    f"{compound_key}: expected {expected_rows}, got {actual_rows}"
+                )
+
+            validation['endpoint_results'][compound_key] = {
+                'expected': expected_rows,
+                'actual': actual_rows,
+                'status': status,
+                'latest_extraction': latest_ts
+            }
+            logger.info(f"📊 {compound_key}: {status}")
+
+        except Exception as e:
+            logger.error(f"❌ Validation failed for {compound_key}: {e}")
+            validation['critical_issues'].append(f"{compound_key}: {e}")
+            validation['endpoint_results'][compound_key] = {
+                'status': 'ERROR', 'error': str(e)
+            }
+
+    client.close()
+
+    validation['overall_status'] = (
+        'PASS' if not validation['critical_issues'] else 'FAIL'
+    )
+
+    if validation['overall_status'] == 'FAIL':
+        raise ValueError(
+            f"Data validation failed – {len(validation['critical_issues'])} critical issues"
         )
-        
-        if not extraction_results:
-            logger.warning("⚠️ No extraction results to validate")
-            return {'status': 'no_data', 'issues': ['No extraction results found']}
-        
-        # Filter only successful extractions
-        successful_extractions = {
-            endpoint: count for endpoint, count in extraction_results.items()
-            if isinstance(count, int) and count > 0
-        }
-        
-        if not successful_extractions:
-            logger.warning("⚠️ No successful extractions to validate")
-            return {'status': 'no_successful_extractions', 'issues': ['No successful extractions found']}
-        
-        logger.info(f"🔍 Validating {len(successful_extractions)} successful extractions")
-        
-        # Connection
-        host = os.getenv('CLICKHOUSE_HOST')
-        port = int(os.getenv('CLICKHOUSE_PORT', 8443))
-        database = os.getenv('CLICKHOUSE_DATABASE', 'default')
-        username = os.getenv('CLICKHOUSE_USER', 'default')
-        password = os.getenv('CLICKHOUSE_PASSWORD')
-        
-        client = clickhouse_connect.get_client(
-            host=host, port=port, username=username, password=password,
-            database=database, secure=True
-        )
-        
-        raw_schema = config['warehouse']['schemas']['raw_schema']
-        validation_results = {}
-        critical_issues = []
-        warnings = []
-        
-        for endpoint, expected_records in extraction_results.items():
-            if isinstance(expected_records, int) and expected_records > 0:
-                table_name = f"raw_{endpoint}"
-                full_table = f"`{raw_schema}`.`{table_name}`"
-                
-                try:
-                    # Get latest extraction timestamp
-                    latest_extraction_query = f"""
-                        SELECT max(_extracted_at) 
-                        FROM {full_table}
-                    """
-                    latest_extraction = client.query(latest_extraction_query).result_rows[0][0]
-                    
-                    if not latest_extraction:
-                        critical_issues.append(f"{endpoint}: No extraction timestamp found")
-                        continue
-                    
-                    # Count records from latest extraction
-                    actual_records_query = f"""
-                        SELECT count() 
-                        FROM {full_table} 
-                        WHERE _extracted_at = '{latest_extraction}'
-                    """
-                    actual_records = client.query(actual_records_query).result_rows[0][0]
-                    
-                    # Enhanced: LeafLink-specific data quality checks
-                    quality_checks = {}
-                    
-                    if endpoint == 'orders_received':
-                        # Check for null/empty critical fields
-                        null_check = client.query(f"""
-                            SELECT count() 
-                            FROM {full_table} 
-                            WHERE _extracted_at = '{latest_extraction}' 
-                            AND (number IS NULL OR number = '' OR buyer IS NULL OR seller IS NULL)
-                        """).result_rows[0][0]
-                        quality_checks['null_critical_fields'] = null_check
-                        
-                        # Check for duplicate order numbers
-                        duplicate_check = client.query(f"""
-                            SELECT count(*) - count(DISTINCT number) as duplicates
-                            FROM {full_table} 
-                            WHERE _extracted_at = '{latest_extraction}'
-                            AND number IS NOT NULL AND number != ''
-                        """).result_rows[0][0]
-                        quality_checks['duplicates'] = duplicate_check
-                        
-                        # Check for invalid order statuses
-                        valid_statuses = ['draft', 'submitted', 'accepted', 'backorder', 'fulfilled', 'shipped', 'complete', 'rejected', 'combined', 'cancelled']
-                        invalid_status_check = client.query(f"""
-                            SELECT count() 
-                            FROM {full_table} 
-                            WHERE _extracted_at = '{latest_extraction}'
-                            AND lower(status) NOT IN ({','.join([f"'{s}'" for s in valid_statuses])})
-                        """).result_rows[0][0]
-                        quality_checks['invalid_statuses'] = invalid_status_check
-                        
-                        # Check for orders with zero or negative totals (more lenient)
-                        invalid_totals = client.query(f"""
-                            SELECT count() 
-                            FROM {full_table} 
-                            WHERE _extracted_at = '{latest_extraction}'
-                            AND (total_amount IS NULL 
-                                 OR (total_amount != '' AND total_amount != 'None' AND toFloat64OrNull(total_amount) < 0))
-                        """).result_rows[0][0]
-                        quality_checks['invalid_totals'] = invalid_totals
-                        
-                        # Check for zero-value orders separately (these might be legitimate)
-                        zero_totals = client.query(f"""
-                            SELECT count() 
-                            FROM {full_table} 
-                            WHERE _extracted_at = '{latest_extraction}'
-                            AND (total_amount = '' OR total_amount = '0' OR total_amount = '0.0' 
-                                 OR toFloat64OrNull(total_amount) = 0)
-                        """).result_rows[0][0]
-                        quality_checks['zero_totals'] = zero_totals
-                        
-                        # Debug: Sample total_amount values to understand the data
-                        sample_totals = client.query(f"""
-                            SELECT total_amount, count() as cnt
-                            FROM {full_table} 
-                            WHERE _extracted_at = '{latest_extraction}'
-                            GROUP BY total_amount
-                            ORDER BY cnt DESC
-                            LIMIT 10
-                        """).result_rows
-                        
-                        logger.info(f"   📊 Sample total_amount values: {sample_totals}")
-                        
-                    elif endpoint == 'order_payments':
-                        # Check for null/empty critical fields in payments
-                        null_check = client.query(f"""
-                            SELECT count() 
-                            FROM {full_table} 
-                            WHERE _extracted_at = '{latest_extraction}' 
-                            AND (id IS NULL OR id = '' OR "order" IS NULL OR "order" = '')
-                        """).result_rows[0][0]
-                        quality_checks['null_critical_fields'] = null_check
-                        
-                        # Check for duplicate payment IDs
-                        duplicate_check = client.query(f"""
-                            SELECT count(*) - count(DISTINCT id) as duplicates
-                            FROM {full_table} 
-                            WHERE _extracted_at = '{latest_extraction}'
-                            AND id IS NOT NULL AND id != ''
-                        """).result_rows[0][0]
-                        quality_checks['duplicates'] = duplicate_check
-                        
-                        # Check for invalid payment types
-                        valid_payment_types = ['other', 'cash', 'check', 'credit', 'trade', 'ach', 'wire', 'cashier']
-                        invalid_payment_types = client.query(f"""
-                            SELECT count() 
-                            FROM {full_table} 
-                            WHERE _extracted_at = '{latest_extraction}'
-                            AND lower(payment_type) NOT IN ({','.join([f"'{pt}'" for pt in valid_payment_types])})
-                        """).result_rows[0][0]
-                        quality_checks['invalid_payment_types'] = invalid_payment_types
-                        
-                        # Check for invalid payment amounts
-                        invalid_amounts = client.query(f"""
-                            SELECT count() 
-                            FROM {full_table} 
-                            WHERE _extracted_at = '{latest_extraction}'
-                            AND (total_amount IS NULL OR toFloat64OrNull(total_amount) <= 0)
-                        """).result_rows[0][0]
-                        quality_checks['invalid_amounts'] = invalid_amounts
-                        
-                        # Set other fields to 0 for consistency
-                        quality_checks['invalid_statuses'] = 0
-                        quality_checks['invalid_totals'] = 0
-                        quality_checks['zero_totals'] = 0
-                        
-                    else:
-                        # Generic checks for other endpoints
-                        quality_checks['null_critical_fields'] = 0
-                        quality_checks['duplicates'] = 0
-                        quality_checks['invalid_statuses'] = 0
-                        quality_checks['invalid_totals'] = 0
-                        quality_checks['zero_totals'] = 0
-                        quality_checks['invalid_payment_types'] = 0
-                        quality_checks['invalid_amounts'] = 0
-                    
-                    # Validation status determination
-                    status = "✅ VALID"
-                    issues = []
-                    
-                    if actual_records != expected_records:
-                        status = "❌ RECORD MISMATCH"
-                        issues.append(f"Expected {expected_records}, got {actual_records}")
-                        critical_issues.append(f"{endpoint}: Record count mismatch")
-                    
-                    if quality_checks.get('duplicates', 0) > 0:
-                        status = "❌ DUPLICATES FOUND"
-                        issues.append(f"{quality_checks['duplicates']} duplicate records")
-                        critical_issues.append(f"{endpoint}: {quality_checks['duplicates']} duplicates")
-                    
-                    if quality_checks.get('null_critical_fields', 0) > 0:
-                        if quality_checks['null_critical_fields'] > expected_records * 0.1:  # >10% null
-                            status = "❌ DATA QUALITY ISSUES"
-                            issues.append(f"{quality_checks['null_critical_fields']} records with null critical fields")
-                            critical_issues.append(f"{endpoint}: High null rate in critical fields")
-                        else:
-                            warnings.append(f"{endpoint}: {quality_checks['null_critical_fields']} records with null fields")
-                    
-                    if quality_checks.get('invalid_statuses', 0) > 0:
-                        status = "❌ INVALID DATA"
-                        issues.append(f"{quality_checks['invalid_statuses']} records with invalid order status")
-                        critical_issues.append(f"{endpoint}: Invalid order statuses detected")
-                    
-                    if quality_checks.get('invalid_payment_types', 0) > 0:
-                        status = "❌ INVALID DATA"
-                        issues.append(f"{quality_checks['invalid_payment_types']} records with invalid payment type")
-                        critical_issues.append(f"{endpoint}: Invalid payment types detected")
-                    
-                    if quality_checks.get('invalid_amounts', 0) > 0:
-                        if quality_checks['invalid_amounts'] > expected_records * 0.05:  # >5% invalid amounts
-                            status = "❌ FINANCIAL DATA ISSUES"
-                            issues.append(f"{quality_checks['invalid_amounts']} records with invalid payment amounts")
-                            critical_issues.append(f"{endpoint}: High rate of invalid payment amounts")
-                        else:
-                            warnings.append(f"{endpoint}: {quality_checks['invalid_amounts']} invalid payment amounts")
-                    
-                    if quality_checks.get('invalid_totals', 0) > 0:
-                        # Only flag as critical if more than 10% have truly invalid totals (negative or null)
-                        if quality_checks['invalid_totals'] > expected_records * 0.10:  # >10% invalid totals
-                            status = "❌ FINANCIAL DATA ISSUES"
-                            issues.append(f"{quality_checks['invalid_totals']} records with invalid order totals")
-                            critical_issues.append(f"{endpoint}: High rate of invalid order totals")
-                        else:
-                            warnings.append(f"{endpoint}: {quality_checks['invalid_totals']} invalid order totals")
-                    
-                    # Report zero totals as info, not critical (these might be legitimate samples, etc.)
-                    if quality_checks.get('zero_totals', 0) > 0:
-                        zero_percentage = (quality_checks['zero_totals'] / expected_records) * 100
-                        warnings.append(f"{endpoint}: {quality_checks['zero_totals']} zero-value orders ({zero_percentage:.1f}%)")
-                    
-                    validation_results[endpoint] = {
-                        'expected': expected_records,
-                        'actual': actual_records,
-                        'quality_checks': quality_checks,
-                        'status': status,
-                        'issues': issues,
-                        'latest_extraction': latest_extraction
-                    }
-                    
-                    logger.info(f"📊 {endpoint}: {status}")
-                    logger.info(f"   Expected: {expected_records}, Actual: {actual_records}")
-                    logger.info(f"   Quality checks: {quality_checks}")
-                    
-                except Exception as e:
-                    logger.error(f"❌ Failed to validate {endpoint}: {e}")
-                    validation_results[endpoint] = {'status': f'❌ VALIDATION ERROR: {e}'}
-                    critical_issues.append(f"{endpoint}: Validation failed - {e}")
-        
-        client.close()
-        
-        # Overall validation status
-        all_valid = len(critical_issues) == 0
-        
-        validation_summary = {
-            'overall_status': 'PASS' if all_valid else 'FAIL',
-            'critical_issues': critical_issues,
-            'warnings': warnings,
-            'endpoint_results': validation_results,
-            'total_endpoints_validated': len(validation_results)
-        }
-        
-        if all_valid:
-            logger.info("✅ All extractions passed validation")
-            if warnings:
-                logger.warning(f"⚠️ {len(warnings)} warnings detected:")
-                for warning in warnings:
-                    logger.warning(f"   {warning}")
-        else:
-            logger.error("❌ CRITICAL VALIDATION FAILURES DETECTED!")
-            for issue in critical_issues:
-                logger.error(f"   {issue}")
-            
-            # CRITICAL: Raise exception to fail the pipeline on data quality issues
-            raise ValueError(f"Data validation failed with {len(critical_issues)} critical issues")
-        
-        # Store validation results
-        context['task_instance'].xcom_push(key='validation_results', value=validation_summary)
-        return validation_summary
-        
-    except Exception as e:
-        logger.error(f"❌ Validation process failed: {e}")
-        raise
+
+    context['task_instance'].xcom_push(key='validation_results', value=validation)
+    return validation
+
 
 def load_leaflink_config():
     """Load and validate LeafLink configuration."""
@@ -611,38 +480,25 @@ def test_connection(**context):
         raise
 
 # ---------------- COORDINATED EXTRACTION ---------------- #
-def run_coordinated_extraction(**context):
-    """Run extraction with proper dependency handling and atomic state management."""
-    logger.info("🚀 Starting coordinated LeafLink extraction...")
-    
-    try:
-        # Use the coordinated extraction function
-        results = leaflink.extract_all_endpoints_with_dependencies(**context)
-        
-        # Store results in context for downstream tasks
-        context['task_instance'].xcom_push(key='extraction_results', value=results['extraction_results'])
-        context['task_instance'].xcom_push(key='total_records', value=results['total_records'])
-        context['task_instance'].xcom_push(key='completed_endpoints', value=results['completed_endpoints'])
-        
-        # Check if any critical endpoints failed
-        critical_endpoints = ['orders_received']  # Define critical endpoints
-        failed_critical = []
-        
-        for endpoint in critical_endpoints:
-            if endpoint in results['extraction_results']:
-                result = results['extraction_results'][endpoint]
-                if isinstance(result, str) and 'Failed' in result:
-                    failed_critical.append(endpoint)
-        
-        if failed_critical:
-            raise ValueError(f"Critical endpoints failed: {failed_critical}")
-        
-        logger.info(f"✅ Coordinated extraction completed: {results['total_records']} total records")
-        return results['total_records']
-        
-    except Exception as e:
-        logger.error(f"❌ Coordinated extraction failed: {e}")
-        raise
+# def run_coordinated_extraction(**context):
+#     """Loop through all companies; honour their individual cron schedules."""
+#     logical_dt = context['logical_date']      # passed by Airflow
+#     total, combined = 0, {}
+
+#     for comp in config['companies']:
+#         if not _due_this_run(comp['schedule_cron'], logical_dt):
+#             logger.info(f"⏭️  {comp['region'].upper()} not scheduled this tick")
+#             continue
+
+#         out = _run_company(comp, **context)
+#         total += out['total_records']
+#         combined.update({f"{comp['region']}_{k}": v for k, v in out['extraction_results'].items()})
+
+#     context['task_instance'].xcom_push(key='extraction_results', value=combined)
+#     context['task_instance'].xcom_push(key='total_records', value=total)
+#     logger.info(f"✅ All companies complete: {total} rows")
+#     return total
+
 
 # ---------------- STATE MANAGEMENT ---------------- #
 def finalize_extraction_state(**context):
