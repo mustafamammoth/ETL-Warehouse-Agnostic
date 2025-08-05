@@ -223,7 +223,49 @@ def init_extractor(config):
     }
     
     _load_state()
-    logger.info(f"✅ Extractor initialized. Enabled endpoints: {list(ENABLED_ENDPOINTS.keys())}")
+    
+    logger.info("=" * 80)
+    logger.info("🚀 REPSLY EXTRACTOR INITIALIZATION")
+    logger.info("=" * 80)
+    logger.info(f"📋 Enabled Endpoints: {len(ENABLED_ENDPOINTS)} endpoints")
+    base_url = CONFIG['api']['base_url']
+    
+    for endpoint_key in sorted(ENABLED_ENDPOINTS.keys()):
+        endpoint_config = REPSLY_ENDPOINTS[endpoint_key]
+        pagination_type = endpoint_config.get('pagination_type', 'unknown').upper()
+        incremental_field = endpoint_config.get('incremental_field', 'None')
+        dependencies = endpoint_config.get('depends_on', [])
+        path = endpoint_config['path']
+        
+        # Build URL pattern based on pagination type
+        if pagination_type == 'STATIC':
+            url_pattern = f"{base_url}/{path}"
+        elif pagination_type == 'DATETIME_RANGE':
+            url_pattern = f"{base_url}/{endpoint_config.get('url_pattern', path)}"
+        elif pagination_type == 'QUERY_PARAMS':
+            url_pattern = f"{base_url}/{endpoint_config.get('url_pattern', path)}?modified={{date}}&skip={{offset}}"
+        else:  # ID or TIMESTAMP
+            url_pattern = f"{base_url}/{path}/{{value}}"
+        
+        logger.info(f"   ├─ {endpoint_key:<25} [{pagination_type}]")
+        logger.info(f"   │  ├─ URL: {url_pattern}")
+        logger.info(f"   │  ├─ Incremental Field: {incremental_field}")
+        
+        if dependencies:
+            logger.info(f"   │  ├─ Dependencies: {', '.join(dependencies)}")
+        else:
+            logger.info(f"   │  ├─ Dependencies: None")
+            
+        if pagination_type in ['ID', 'TIMESTAMP']:
+            limit = endpoint_config.get('limit', 'N/A')
+            logger.info(f"   │  └─ Page Limit: {limit}")
+        elif pagination_type == 'DATETIME_RANGE':
+            max_days = endpoint_config.get('max_range_days', 'N/A')
+            logger.info(f"   │  └─ Max Range Days: {max_days}")
+        else:
+            logger.info(f"   │  └─ Single Request")
+    
+    logger.info("=" * 80)
     return ENABLED_ENDPOINTS
 
 # ---------------- AUTH WITH CONNECTION POOLING ---------------- #
@@ -238,10 +280,10 @@ def create_authenticated_session():
             test_url = f"{CONFIG['api']['base_url']}/{CONFIG['api']['test_endpoint']}"
             response = _SESSION_CACHE.get(test_url, timeout=5)
             if response.status_code == 200:
-                logger.info("♻️ Reusing existing authenticated session")
+                logger.info("🔄 Session: Reusing existing authenticated session")
                 return _SESSION_CACHE
         except Exception:
-            logger.info("🔄 Cached session invalid, creating new one")
+            logger.info("🔄 Session: Cached session invalid, creating new one")
             _SESSION_CACHE = None
     
     username = os.getenv('REPSLY_USERNAME')
@@ -283,13 +325,13 @@ def create_authenticated_session():
     try:
         response = session.get(test_url, timeout=CONFIG['api']['rate_limiting']['timeout_seconds'])
         response.raise_for_status()
-        logger.info("✅ Authentication successful with pooled connection")
+        logger.info("✅ Authentication: Successfully authenticated with pooled connection")
         
         # Cache the session
         _SESSION_CACHE = session
         return session
     except Exception as e:
-        logger.error(f"❌ Authentication failed: {e}")
+        logger.error(f"❌ Authentication: Failed to authenticate - {e}")
         raise
 
 # ---------------- UTILITIES ---------------- #
@@ -322,11 +364,11 @@ def smart_rate_limit(response, config):
     if remaining and int(remaining) < 5:
         # Near rate limit, slow down
         time.sleep(2.0)
-        logger.info("⏳ Near rate limit, slowing down")
+        logger.info("⏳ Rate Limit: Near limit, slowing down (remaining: <5)")
     elif response.status_code == 429:
         # Hit rate limit, wait longer
         wait_time = int(reset_time) if reset_time else 60
-        logger.warning(f"⏸️ Rate limited, waiting {wait_time}s")
+        logger.warning(f"⏸️ Rate Limit: Hit rate limit, waiting {wait_time}s")
         time.sleep(wait_time)
     else:
         # Normal rate limiting
@@ -357,29 +399,34 @@ def _load_state():
         
         if not os.path.exists(path):
             _STATE_CACHE = {}
-            logger.info("📁 No existing state file found, starting fresh")
+            logger.info("📁 State: No existing state file found, starting fresh")
             return
         
         try:
             # Check if file is empty
             if os.path.getsize(path) == 0:
-                logger.warning("📁 State file is empty, starting fresh")
+                logger.warning("📁 State: File is empty, starting fresh")
                 _STATE_CACHE = {}
                 return
                 
             with open(path, 'r') as f:
                 content = f.read().strip()
                 if not content:
-                    logger.warning("📁 State file content is empty, starting fresh")
+                    logger.warning("📁 State: File content is empty, starting fresh")
                     _STATE_CACHE = {}
                     return
                 _STATE_CACHE = json.loads(content)
-            logger.info(f"📁 Loaded state from {path}: {_STATE_CACHE}")
+            logger.info(f"📁 State: Loaded from {path}")
+            for endpoint, watermark in _STATE_CACHE.items():
+                if endpoint.endswith('_last_id') or endpoint.endswith('_last_timestamp'):
+                    logger.info(f"   ├─ {endpoint:<25} = {watermark}")
+                else:
+                    logger.info(f"   ├─ {endpoint:<25} = {watermark}")
         except json.JSONDecodeError as e:
-            logger.warning(f"⚠️ Invalid JSON in state file {path}: {e}. Starting fresh.")
+            logger.warning(f"⚠️ State: Invalid JSON in file {path}: {e}. Starting fresh.")
             _STATE_CACHE = {}
         except Exception as e:
-            logger.warning(f"⚠️ Failed to load state file {path}: {e}")
+            logger.warning(f"⚠️ State: Failed to load file {path}: {e}")
             _STATE_CACHE = {}
 
 def _save_state():
@@ -394,7 +441,12 @@ def _save_state():
             state_json = json.dumps(_STATE_CACHE, indent=2, sort_keys=True)
             checksum = hashlib.md5(state_json.encode()).hexdigest()
             
-            logger.info(f"💾 Saving state to {path}: {_STATE_CACHE}")
+            logger.info(f"💾 State: Saving to {path}")
+            for endpoint, watermark in _STATE_CACHE.items():
+                if endpoint.endswith('_last_id') or endpoint.endswith('_last_timestamp'):
+                    logger.info(f"   ├─ {endpoint:<25} = {watermark}")
+                else:
+                    logger.info(f"   ├─ {endpoint:<25} = {watermark}")
             
             # Atomic write: write to temp file first
             with open(temp_path, 'w') as f:
@@ -416,10 +468,10 @@ def _save_state():
                     os.remove(path)
             os.rename(temp_path, path)
             
-            logger.info(f"💾 Successfully saved watermark state to {path} (checksum: {checksum[:8]})")
+            logger.info(f"💾 State: Successfully saved (checksum: {checksum[:8]})")
             
         except Exception as e:
-            logger.error(f"❌ Failed to save state file {path}: {e}")
+            logger.error(f"❌ State: Failed to save file {path}: {e}")
             # Clean up temp file
             if os.path.exists(temp_path):
                 try:
@@ -440,7 +492,7 @@ def _get_last_watermark(endpoint_key: str) -> Optional[datetime]:
                 iso = iso.replace('Z', '+00:00')
             return datetime.fromisoformat(iso)
         except Exception as e:
-            logger.warning(f"⚠️ Invalid watermark format for {endpoint_key}: {iso}")
+            logger.warning(f"⚠️ State: Invalid watermark format for {endpoint_key}: {iso}")
             return None
 
 def _update_watermark(endpoint_key: str, new_ts: datetime):
@@ -450,7 +502,7 @@ def _update_watermark(endpoint_key: str, new_ts: datetime):
             new_ts = new_ts.replace(tzinfo=timezone.utc)
         # Always store in UTC ISO format with Z
         _STATE_CACHE[endpoint_key] = new_ts.astimezone(timezone.utc).isoformat().replace('+00:00', 'Z')
-        logger.info(f"🕒 Updated watermark in memory: {endpoint_key} = {_STATE_CACHE[endpoint_key]}")
+        logger.info(f"🕒 Watermark: Updated in memory {endpoint_key} → {_STATE_CACHE[endpoint_key]}")
 
 # ---------------- IMPROVED INCREMENTAL HELPERS ---------------- #
 def _utc_now():
@@ -539,7 +591,7 @@ def _get_incremental_date_range(endpoint_key: str):
             start_date = end_date - timedelta(days=CONFIG['extraction']['testing']['date_range_days'])
         else:
             start_date = end_date - timedelta(days=CONFIG['extraction']['production']['date_range_days'])
-        logger.info(f"🔄 Full extraction date range for {endpoint_key}: {start_date.isoformat()} to {end_date.isoformat()}")
+        logger.info(f"🔄 Full Refresh: {endpoint_key} using {(end_date - start_date).days} day range")
         return start_date, end_date
     
     last_wm = _get_last_watermark(endpoint_key)
@@ -552,7 +604,7 @@ def _get_incremental_date_range(endpoint_key: str):
         
         lookback = CONFIG['extraction']['incremental'].get('lookback_minutes', 10)
         start_date = last_wm - timedelta(minutes=lookback)
-        logger.info(f"🔁 Incremental extract for {endpoint_key} (type: {pagination_type}) from {start_date.isoformat()}")
+        logger.info(f"🔁 Incremental: {endpoint_key} from {start_date.strftime('%Y-%m-%d %H:%M:%S')} UTC (lookback: {lookback}m)")
     else:
         # First run - use default range
         if TESTING_MODE:
@@ -561,12 +613,10 @@ def _get_incremental_date_range(endpoint_key: str):
             # For ID-based endpoints, use shorter initial range
             if pagination_type == 'id':
                 start_date = end_date - timedelta(days=30)  # Shorter range for ID endpoints
-                logger.info(f"🔄 First run for ID endpoint {endpoint_key}, using 30-day range")
+                logger.info(f"🔄 First Run: ID-based {endpoint_key} using 30-day range")
             else:
                 start_date = end_date - timedelta(days=CONFIG['extraction']['production']['date_range_days'])
-                logger.info(f"🔄 First run for {endpoint_key}, using default range")
-        
-        logger.info(f"🔄 Date range from {start_date.isoformat()} to {end_date.isoformat()}")
+                logger.info(f"🔄 First Run: {endpoint_key} using default range ({CONFIG['extraction']['production']['date_range_days']} days)")
     
     return start_date, end_date
 
@@ -598,7 +648,7 @@ def create_table_from_dataframe(client, full_table, df):
     
     try:
         client.command(create_ddl)
-        logger.info(f"🆕 Created partitioned table {full_table}")
+        logger.info(f"🆕 Table: Created partitioned table {full_table}")
         
         # Verify the table was created with partitions
         verify_query = f"SHOW CREATE TABLE {full_table}"
@@ -606,13 +656,13 @@ def create_table_from_dataframe(client, full_table, df):
         create_statement = result.result_rows[0][0]
         
         if "PARTITION BY" in create_statement:
-            logger.info(f"✅ Verified {full_table} has partitioning")
+            logger.info(f"✅ Table: Verified {full_table} has partitioning")
         else:
             logger.error(f"❌ CRITICAL: {full_table} was created WITHOUT partitioning!")
             raise Exception(f"Table {full_table} created without partitioning")
             
     except Exception as e:
-        logger.error(f"❌ Failed to create table {full_table}: {e}")
+        logger.error(f"❌ Table: Failed to create table {full_table}: {e}")
         raise
 
 def load_dataframe_to_warehouse_verified(df, endpoint_key, extracted_at):
@@ -641,9 +691,9 @@ def load_dataframe_to_warehouse_verified(df, endpoint_key, extracted_at):
         if raw_schema != 'default':
             try:
                 client.command(f"CREATE DATABASE IF NOT EXISTS `{raw_schema}`")
-                logger.info(f"✅ Database {raw_schema} ready")
+                logger.info(f"✅ Database: {raw_schema} ready")
             except Exception as db_error:
-                logger.error(f"❌ Failed to create database {raw_schema}: {db_error}")
+                logger.error(f"❌ Database: Failed to create {raw_schema}: {db_error}")
                 raise ValueError(f"Cannot access or create database {raw_schema}: {db_error}")
         
         table_name = f"raw_{endpoint_key}"
@@ -660,12 +710,12 @@ def load_dataframe_to_warehouse_verified(df, endpoint_key, extracted_at):
             
             existing_count = duplicate_check.result_rows[0][0]
             if existing_count > 0:
-                logger.warning(f"⚠️ DUPLICATE PREVENTION: {existing_count} records already exist")
-                logger.warning(f"   Timestamp: {extraction_timestamp}")
-                logger.warning(f"   Skipping load to prevent duplicates")
+                logger.warning(f"⚠️ Warehouse: Duplicates detected - skipping load")
+                logger.warning(f"   ├─ Existing records: {existing_count}")
+                logger.warning(f"   └─ Timestamp: {extraction_timestamp}")
                 return 0  # Success but no new records
             
-            logger.info(f"✅ No duplicates found for {extraction_timestamp}")
+            logger.info(f"✅ Warehouse: No duplicates found for {extraction_timestamp}")
         else:
             # Create table if doesn't exist
             create_table_from_dataframe(client, full_table, df)
@@ -697,13 +747,13 @@ def load_dataframe_to_warehouse_verified(df, endpoint_key, extracted_at):
         actual_loaded = verification_check.result_rows[0][0]
         
         if actual_loaded != len(df):
-            raise ValueError(f"Load verification failed: expected {len(df)}, loaded {actual_loaded}")
+            raise ValueError(f"Warehouse: Load verification failed - expected {len(df)}, loaded {actual_loaded}")
         
-        logger.info(f"✅ Load verified: {actual_loaded} records")
+        logger.info(f"✅ Warehouse: Loaded {actual_loaded} rows into {full_table}")
         return actual_loaded
         
     except Exception as e:
-        logger.error(f"❌ Warehouse load failed: {e}")
+        logger.error(f"❌ Warehouse: Load failed - {e}")
         raise
     finally:
         client.close()
@@ -902,16 +952,19 @@ def get_paginated_data_fixed_query_params(session, endpoint_config, endpoint_nam
     max_pages = 50  # Reduced to prevent infinite loops
     page_count = 0
     
-    logger.info(f"   Starting pagination with modified date: {modified_date}")
+    logger.info(f"📡 API: Query params pagination starting")
+    logger.info(f"   ├─ Modified Date: {modified_date}")
+    logger.info(f"   ├─ Page Size: {page_size}")
+    logger.info(f"   └─ Max Pages: {max_pages}")
     
     while page_count < max_pages:
         page_count += 1
         
         if skip >= 9500:
-            logger.info(f"   Reached skip limit (9500), advancing date")
+            logger.info(f"   📄 Page {page_count}: Skip limit reached (9500), advancing date by 90 days")
             start_date = start_date + timedelta(days=90)  # Jump forward 90 days
             if start_date >= _utc_now():
-                logger.info(f"   Reached current date, stopping")
+                logger.info(f"   📄 Page {page_count}: Reached current date, stopping")
                 break
             modified_date = start_date.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z')
             skip = 0
@@ -919,7 +972,7 @@ def get_paginated_data_fixed_query_params(session, endpoint_config, endpoint_nam
             continue
         
         endpoint_url = f"{base_url}/{endpoint_config['url_pattern']}?modified={modified_date}&skip={skip}"
-        logger.info(f"   Page {page_count}: Fetching from {endpoint_url}")
+        logger.info(f"   📄 Page {page_count:2d} | Skip: {skip:5d} | Fetching...")
         
         success = False
         for attempt in range(max_retries):
@@ -927,10 +980,10 @@ def get_paginated_data_fixed_query_params(session, endpoint_config, endpoint_nam
                 response = session.get(endpoint_url, timeout=CONFIG['api']['rate_limiting']['timeout_seconds'])
                 
                 if response.status_code == 400:
-                    logger.info(f"   400 Bad Request, advancing date by 90 days")
+                    logger.info(f"   📄 Page {page_count:2d} | 400 Bad Request - advancing date by 90 days")
                     start_date = start_date + timedelta(days=90)
                     if start_date >= _utc_now():
-                        logger.info(f"   Reached current date, stopping")
+                        logger.info(f"   📄 Page {page_count:2d} | Reached current date, stopping")
                         return all_data
                     modified_date = start_date.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z')
                     skip = 0
@@ -942,13 +995,13 @@ def get_paginated_data_fixed_query_params(session, endpoint_config, endpoint_nam
                 data = response.json()
                 
                 records = data.get(endpoint_config['data_field'], [])
-                logger.info(f"   Retrieved {len(records)} records (total so far: {len(all_data)})")
+                logger.info(f"   📄 Page {page_count:2d} | Got: {len(records):3d} records | Total: {len(all_data):5d}")
                 
                 if not records:
-                    logger.info(f"   No records found, advancing date by 90 days")
+                    logger.info(f"   📄 Page {page_count:2d} | No records - advancing date by 90 days")
                     start_date = start_date + timedelta(days=90)
                     if start_date >= _utc_now():
-                        logger.info(f"   Reached current date, stopping")
+                        logger.info(f"   📄 Page {page_count:2d} | Reached current date, stopping")
                         return all_data
                     modified_date = start_date.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z')
                     skip = 0
@@ -961,11 +1014,11 @@ def get_paginated_data_fixed_query_params(session, endpoint_config, endpoint_nam
                 # Check testing limit
                 if TESTING_MODE and MAX_RECORDS_PER_ENDPOINT and len(all_data) >= MAX_RECORDS_PER_ENDPOINT:
                     all_data = all_data[:MAX_RECORDS_PER_ENDPOINT]
-                    logger.info(f"   Reached testing limit of {MAX_RECORDS_PER_ENDPOINT} records")
+                    logger.info(f"   📄 Page {page_count:2d} | Testing limit reached ({MAX_RECORDS_PER_ENDPOINT})")
                     return all_data
                 
                 if len(records) < page_size:
-                    logger.info(f"   Got fewer records than page size, advancing date")
+                    logger.info(f"   📄 Page {page_count:2d} | Got fewer than page size - advancing date")
                     start_date = start_date + timedelta(days=90)
                     if start_date >= _utc_now():
                         return all_data
@@ -981,9 +1034,9 @@ def get_paginated_data_fixed_query_params(session, endpoint_config, endpoint_nam
                 break
                 
             except requests.exceptions.RequestException as e:
-                logger.warning(f"   Request error on page {page_count}, attempt {attempt + 1}: {e}")
+                logger.warning(f"   📄 Page {page_count:2d} | Request error (attempt {attempt + 1}): {e}")
                 if attempt == max_retries - 1:
-                    logger.warning(f"   Failed after {max_retries} attempts, advancing date")
+                    logger.warning(f"   📄 Page {page_count:2d} | Max retries reached - advancing date")
                     start_date = start_date + timedelta(days=90)
                     if start_date >= _utc_now():
                         return all_data
@@ -995,10 +1048,9 @@ def get_paginated_data_fixed_query_params(session, endpoint_config, endpoint_nam
                 time.sleep(2 ** attempt)
             
             except Exception as e:
-                logger.error(f"   Unexpected error on page {page_count}, attempt {attempt + 1}: {e}")
+                logger.error(f"   📄 Page {page_count:2d} | Unexpected error (attempt {attempt + 1}): {e}")
                 if attempt == max_retries - 1:
-                    logger.error(f"   Giving up on this page after {max_retries} attempts")
-                    # Try advancing date instead of failing completely
+                    logger.error(f"   📄 Page {page_count:2d} | Giving up - advancing date")
                     start_date = start_date + timedelta(days=90)
                     if start_date >= _utc_now():
                         return all_data
@@ -1010,10 +1062,10 @@ def get_paginated_data_fixed_query_params(session, endpoint_config, endpoint_nam
                 time.sleep(2 ** attempt)
         
         if not success:
-            logger.error(f"   Page {page_count} failed completely, stopping")
+            logger.error(f"   📄 Page {page_count:2d} | Failed completely, stopping")
             break
     
-    logger.info(f"✅ {endpoint_name}: Collected {len(all_data)} total records")
+    logger.info(f"✅ Extraction: Collected {len(all_data)} total records from {page_count} pages")
     return all_data
 
 def get_paginated_data(session, endpoint_config, endpoint_name):
@@ -1024,11 +1076,14 @@ def get_paginated_data(session, endpoint_config, endpoint_name):
     base_url = CONFIG['api']['base_url']
     max_retries = 3
     consecutive_failures = 0
+    pagination_type = endpoint_config.get('pagination_type')
     
-    if endpoint_config['pagination_type'] == 'static':
+    logger.info(f"📡 API: Starting {pagination_type.upper()} pagination")
+    
+    if pagination_type == 'static':
         # Static endpoints - single request (unchanged)
         endpoint_url = f"{base_url}/{endpoint_config['path']}"
-        logger.info(f"   Fetching static data from: {endpoint_url}")
+        logger.info(f"📡 API: Fetching static data from {endpoint_url}")
         
         for attempt in range(max_retries):
             try:
@@ -1042,20 +1097,21 @@ def get_paginated_data(session, endpoint_config, endpoint_name):
                     records = data if isinstance(data, list) else [data]
                 
                 all_data.extend(records)
+                logger.info(f"✅ API: Retrieved {len(records)} records from static endpoint")
                 break
                 
             except Exception as e:
                 consecutive_failures += 1
-                logger.warning(f"   Attempt {attempt + 1} failed: {e}")
+                logger.warning(f"   📡 API: Static attempt {attempt + 1} failed: {e}")
                 if attempt == max_retries - 1:
                     raise
                 time.sleep(2 ** attempt)  # Exponential backoff
     
-    elif endpoint_config['pagination_type'] == 'query_params':
+    elif pagination_type == 'query_params':
         # FIXED: Use the new query params handler with proper datetime handling
         return get_paginated_data_fixed_query_params(session, endpoint_config, endpoint_name)
     
-    elif endpoint_config['pagination_type'] == 'datetime_range':
+    elif pagination_type == 'datetime_range':
         # Date range endpoints (keep existing logic but ensure timezone awareness)
         start_date, end_date = _get_incremental_date_range(endpoint_name)
         
@@ -1069,14 +1125,20 @@ def get_paginated_data(session, endpoint_config, endpoint_name):
         max_range_days = endpoint_config.get('max_range_days', 30)
         current_start = start_date
         
+        logger.info(f"📡 API: Date range pagination")
+        logger.info(f"   ├─ Total Range: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
+        logger.info(f"   └─ Chunk Size: {max_range_days} days")
+        
+        chunk_count = 0
         while current_start < end_date:
+            chunk_count += 1
             current_end = min(current_start + timedelta(days=max_range_days), end_date)
             
             start_date_str = current_start.strftime('%Y-%m-%d')
             end_date_str = current_end.strftime('%Y-%m-%d')
             
             endpoint_url = f"{base_url}/{endpoint_config['url_pattern'].format(start_date=start_date_str, end_date=end_date_str)}"
-            logger.info(f"   Fetching date range data from: {endpoint_url}")
+            logger.info(f"   📄 Chunk {chunk_count}: {start_date_str} to {end_date_str}")
             
             for attempt in range(max_retries):
                 try:
@@ -1090,13 +1152,13 @@ def get_paginated_data(session, endpoint_config, endpoint_name):
                         records = data if isinstance(data, list) else [data]
                     
                     all_data.extend(records)
-                    logger.info(f"   Retrieved {len(records)} records for date range {start_date_str} to {end_date_str}")
+                    logger.info(f"   📄 Chunk {chunk_count}: Got {len(records)} records | Total: {len(all_data)}")
                     break
                     
                 except Exception as e:
-                    logger.warning(f"   Date range attempt {attempt + 1} failed: {e}")
+                    logger.warning(f"   📄 Chunk {chunk_count}: Attempt {attempt + 1} failed: {e}")
                     if attempt == max_retries - 1:
-                        logger.error(f"   Failed to fetch date range {start_date_str} to {end_date_str} after {max_retries} attempts")
+                        logger.error(f"   📄 Chunk {chunk_count}: Failed after {max_retries} attempts")
                         # Continue to next range instead of failing completely
                         break
                     time.sleep(2 ** attempt)
@@ -1106,38 +1168,40 @@ def get_paginated_data(session, endpoint_config, endpoint_name):
     else:
         # Standard paginated endpoints (id or timestamp based) - keep existing logic
         if _should_use_incremental(endpoint_name):
-            if endpoint_config['pagination_type'] == 'id':
+            if pagination_type == 'id':
                 last_id_key = f"{endpoint_name}_last_id"
                 with _STATE_LOCK:
                     last_value = _STATE_CACHE.get(last_id_key, 0)
-                logger.info(f"   🔁 INCREMENTAL (ID): Starting from last ID: {last_value}")
+                logger.info(f"🔁 Incremental: ID-based starting from {last_value}")
             
-            elif endpoint_config['pagination_type'] == 'timestamp':
+            elif pagination_type == 'timestamp':
                 timestamp_key = f"{endpoint_name}_last_timestamp"
                 with _STATE_LOCK:
                     stored_raw_timestamp = _STATE_CACHE.get(timestamp_key)
                 
                 if stored_raw_timestamp:
                     last_value = stored_raw_timestamp
-                    logger.info(f"   🔁 INCREMENTAL (TIMESTAMP): Starting from stored timestamp: {last_value}")
+                    logger.info(f"🔁 Incremental: Timestamp-based starting from {last_value}")
                 else:
                     last_value = 0
-                    logger.info(f"   🔄 FIRST RUN (TIMESTAMP): Starting from timestamp: 0")
+                    logger.info(f"🔄 First Run: Timestamp-based starting from 0")
             else:
                 last_value = 0
-                logger.info(f"   🔄 FULL REFRESH: Starting from 0")
+                logger.info(f"🔄 Full Refresh: Starting from 0")
         else:
             last_value = 0
-            logger.info(f"   🔄 NO INCREMENTAL: Starting from 0")
+            logger.info(f"🔄 No Incremental: Starting from 0")
         
         page_count = 0
         max_pages = 1000
+        
+        logger.info(f"📄 Pagination: Starting with limit={endpoint_config.get('limit', 'N/A')}, value={last_value}")
         
         while page_count < max_pages:
             page_count += 1
             endpoint_url = f"{base_url}/{endpoint_config['path']}/{last_value}"
             
-            logger.info(f"   Page {page_count}: Fetching from {endpoint_url}")
+            logger.info(f"   📄 Page {page_count:2d} | Value: {last_value:5} | Fetching...")
             
             for attempt in range(max_retries):
                 try:
@@ -1148,38 +1212,38 @@ def get_paginated_data(session, endpoint_config, endpoint_name):
                     meta = data.get('MetaCollectionResult', {})
                     total_count = meta.get(endpoint_config['total_count_field'], 0)
                     
-                    if endpoint_config['pagination_type'] == 'timestamp':
+                    if pagination_type == 'timestamp':
                         new_value = meta.get(endpoint_config['timestamp_field'], 0)
                     else:
                         new_value = meta.get(endpoint_config['id_field'], 0)
                     
                     records = data.get(endpoint_config['data_field'], [])
                     
-                    logger.info(f"   Retrieved {len(records)} records (total: {len(all_data)})")
-                    logger.info(f"   Meta result - Total count: {total_count}, New value: {new_value}")
+                    logger.info(f"   📄 Page {page_count:2d} | Got: {len(records):3d} records | Total: {len(all_data):5d}")
+                    logger.info(f"   📄 Page {page_count:2d} | Meta: count={total_count}, new_value={new_value}")
                     
                     if not records or total_count == 0:
-                        logger.info(f"   No more records available, stopping pagination")
+                        logger.info(f"   📄 Page {page_count:2d} | No more records - pagination complete")
                         return all_data
                     
                     all_data.extend(records)
                     
                     # Store pagination state (but don't save to file yet)
-                    if endpoint_config['pagination_type'] == 'id' and records:
+                    if pagination_type == 'id' and records:
                         id_field_name = endpoint_config.get('id_field', 'LastClientNoteID').replace('Last', '')
                         if id_field_name in records[-1]:
                             highest_id_in_batch = records[-1][id_field_name]
                             last_id_key = f"{endpoint_name}_last_id"
                             with _STATE_LOCK:
                                 _STATE_CACHE[last_id_key] = highest_id_in_batch
-                            logger.info(f"   📝 Stored last ID in memory: {highest_id_in_batch}")
+                            logger.info(f"   📝 State: Stored last ID in memory: {highest_id_in_batch}")
                     
-                    elif endpoint_config['pagination_type'] == 'timestamp' and records:
+                    elif pagination_type == 'timestamp' and records:
                         if new_value and new_value > last_value:
                             timestamp_key = f"{endpoint_name}_last_timestamp"
                             with _STATE_LOCK:
                                 _STATE_CACHE[timestamp_key] = new_value
-                            logger.info(f"   📝 Stored API timestamp in memory: {new_value}")
+                            logger.info(f"   📝 State: Stored API timestamp in memory: {new_value}")
                         else:
                             timestamp_field_name = endpoint_config.get('incremental_field', 'TimeStamp')
                             if timestamp_field_name in records[-1]:
@@ -1187,24 +1251,24 @@ def get_paginated_data(session, endpoint_config, endpoint_name):
                                 timestamp_key = f"{endpoint_name}_last_timestamp"
                                 with _STATE_LOCK:
                                     _STATE_CACHE[timestamp_key] = latest_timestamp_in_batch
-                                logger.info(f"   📝 Stored record timestamp in memory: {latest_timestamp_in_batch}")
+                                logger.info(f"   📝 State: Stored record timestamp in memory: {latest_timestamp_in_batch}")
                     
                     # Check testing limit
                     if TESTING_MODE and MAX_RECORDS_PER_ENDPOINT and len(all_data) >= MAX_RECORDS_PER_ENDPOINT:
                         all_data = all_data[:MAX_RECORDS_PER_ENDPOINT]
-                        logger.info(f"   Reached testing limit of {MAX_RECORDS_PER_ENDPOINT} records")
+                        logger.info(f"   📄 Page {page_count:2d} | Testing limit reached ({MAX_RECORDS_PER_ENDPOINT})")
                         return all_data
                     
                     # Update last_value for next iteration
                     if new_value > last_value:
                         last_value = new_value
-                        logger.info(f"   📈 Updated pagination value: {last_value}")
+                        logger.info(f"   📈 Progress: Updated pagination value to {last_value}")
                     else:
-                        logger.info(f"   ⚠️ No progress in pagination (new_value: {new_value}, last_value: {last_value}), stopping")
+                        logger.info(f"   ⚠️ Progress: No advancement (new: {new_value}, last: {last_value}) - stopping")
                         return all_data
                         
                     if len(records) < endpoint_config['limit']:
-                        logger.info(f"   Got fewer records than limit ({len(records)} < {endpoint_config['limit']}), reached end")
+                        logger.info(f"   📄 Page {page_count:2d} | Got fewer than limit ({len(records)} < {endpoint_config['limit']}) - end reached")
                         return all_data
                     
                     smart_rate_limit(response, CONFIG)
@@ -1212,20 +1276,23 @@ def get_paginated_data(session, endpoint_config, endpoint_name):
                     
                 except Exception as e:
                     consecutive_failures += 1
-                    logger.warning(f"   Error on page {page_count}, attempt {attempt + 1}: {e}")
+                    logger.warning(f"   📄 Page {page_count:2d} | Error (attempt {attempt + 1}): {e}")
                     if attempt == max_retries - 1:
                         if page_count == 1:
                             raise  # Fail fast if first page fails
                         else:
-                            logger.warning(f"   Giving up on page {page_count} after {max_retries} attempts")
+                            logger.warning(f"   📄 Page {page_count:2d} | Giving up after {max_retries} attempts")
                             return all_data
                     time.sleep(2 ** attempt)
     
     # Apply testing limit
     if TESTING_MODE and MAX_RECORDS_PER_ENDPOINT:
+        original_count = len(all_data)
         all_data = all_data[:MAX_RECORDS_PER_ENDPOINT]
+        if original_count > MAX_RECORDS_PER_ENDPOINT:
+            logger.info(f"🧪 Testing: Limited from {original_count} to {MAX_RECORDS_PER_ENDPOINT} records")
     
-    logger.info(f"✅ {endpoint_name}: Collected {len(all_data)} total records")
+    logger.info(f"✅ Extraction: Collected {len(all_data)} total records")
     return all_data
 
 # ---------------- SCHEDULING WITH DEPENDENCIES ---------------- #
@@ -1240,7 +1307,7 @@ def should_run_endpoint(endpoint_key, execution_dt: datetime, completed_endpoint
     # Check if all dependencies are completed
     for dep in dependencies:
         if dep not in completed_endpoints:
-            logger.info(f"⏳ {endpoint_key} waiting for dependency {dep}")
+            logger.info(f"⏳ Dependencies: {endpoint_key} waiting for {dep}")
             return False
     
     return True
@@ -1250,6 +1317,8 @@ def get_endpoint_execution_order():
     endpoints = list(ENABLED_ENDPOINTS.keys())
     completed = set()
     ordered = []
+    
+    logger.info("📋 Execution Planning:")
     
     # Simple dependency resolution
     max_iterations = len(endpoints) * 2
@@ -1265,38 +1334,74 @@ def get_endpoint_execution_order():
                 completed.add(endpoint)
                 endpoints.remove(endpoint)
                 made_progress = True
+                
+                # Show endpoint details in execution order
+                endpoint_config = REPSLY_ENDPOINTS[endpoint]
+                pagination_type = endpoint_config.get('pagination_type', 'unknown').upper()
+                dependencies = endpoint_config.get('depends_on', [])
+                dep_info = f"depends on {', '.join(dependencies)}" if dependencies else "no dependencies"
+                logger.info(f"   ├─ {endpoint:<25} [{pagination_type}] ({dep_info})")
         
         if not made_progress:
             # Add remaining endpoints (circular dependencies or missing deps)
-            logger.warning(f"⚠️ Adding remaining endpoints without dependency check: {endpoints}")
+            logger.warning(f"⚠️ Dependencies: Adding remaining without dependency check: {endpoints}")
+            for endpoint in endpoints:
+                endpoint_config = REPSLY_ENDPOINTS[endpoint]
+                pagination_type = endpoint_config.get('pagination_type', 'unknown').upper()
+                logger.info(f"   ├─ {endpoint:<25} [{pagination_type}] (forced)")
             ordered.extend(endpoints)
             break
     
-    logger.info(f"📋 Endpoint execution order: {ordered}")
+    logger.info(f"✅ Final Order: {len(ordered)} endpoints planned")
     return ordered
 
 # ---------------- MAIN EXTRACTION FUNCTION WITH ATOMIC STATE UPDATES ---------------- #
 def extract_repsly_endpoint(endpoint_key, **context):
     """ATOMIC extraction with bulletproof state management."""
+    logger.info("=" * 100)
+    logger.info(f"🚀 ENDPOINT EXTRACTION START")
+    logger.info("=" * 100)
+    
     if endpoint_key not in ENABLED_ENDPOINTS:
-        logger.warning(f"⚠️ Endpoint {endpoint_key} not enabled")
+        logger.warning(f"⏭️ Skip: {endpoint_key} not enabled in configuration")
+        logger.info("=" * 100)
         return 0
 
     execution_dt = context.get('logical_date') or _utc_now()
     endpoint_config = REPSLY_ENDPOINTS.get(endpoint_key)
     
     if not endpoint_config:
-        logger.error(f"❌ Unknown endpoint: {endpoint_key}")
+        logger.error(f"❌ Error: Unknown endpoint {endpoint_key}")
+        logger.info("=" * 100)
         return 0
 
-    logger.info(f"🔄 ATOMIC extraction for {endpoint_key}")
+    pagination_type = endpoint_config.get('pagination_type', 'unknown').upper()
+    incremental_field = endpoint_config.get('incremental_field', 'None')
+    dependencies = endpoint_config.get('depends_on', [])
+    path = endpoint_config.get('path', 'unknown')
+    incremental_enabled = _should_use_incremental(endpoint_key)
     
+    # Header information
+    logger.info(f"📊 Endpoint: {endpoint_key}")
+    logger.info(f"📈 Pagination: {pagination_type}")
+    logger.info(f"🔗 Path: {path}")
+    logger.info(f"📅 Incremental Field: {incremental_field}")
+    logger.info(f"🔄 Incremental Enabled: {'YES' if incremental_enabled else 'NO'}")
+    logger.info(f"⏰ Execution: {execution_dt.strftime('%Y-%m-%d %H:%M:%S')} UTC")
+    
+    if dependencies:
+        logger.info(f"🔄 Dependencies: {', '.join(dependencies)}")
+    else:
+        logger.info(f"🔄 Dependencies: None")
+    
+    logger.info("-" * 100)
+
     # CRITICAL: Backup current state before ANY changes
     state_backup = None
     with _STATE_LOCK:
         state_backup = _STATE_CACHE.copy()
     
-    logger.info(f"💾 State backed up for rollback safety")
+    logger.info(f"💾 State: Backed up for rollback safety")
 
     try:
         # Step 1: Extract data (no state changes)
@@ -1304,20 +1409,23 @@ def extract_repsly_endpoint(endpoint_key, **context):
         raw_data = get_paginated_data(session, endpoint_config, endpoint_key)
 
         if not raw_data:
-            logger.warning(f"⚠️ No data returned for {endpoint_key}")
+            logger.warning(f"📭 No data returned from API")
+            logger.info("=" * 100)
             return 0
 
         # Step 2: Process data (no state changes)
+        logger.info(f"🔄 Processing: Flattening {len(raw_data)} records...")
         flattened = []
         for i, record in enumerate(raw_data):
             try:
                 flattened.append(flatten_repsly_record(record))
             except Exception as e:
-                logger.warning(f"   Failed to flatten record {i}: {e}")
+                logger.warning(f"   ⚠️ Failed to flatten record {i}: {e}")
                 continue
 
         if not flattened:
-            logger.warning(f"⚠️ No valid records after flattening for {endpoint_key}")
+            logger.warning(f"📭 No valid records after flattening")
+            logger.info("=" * 100)
             return 0
 
         # Step 3: Create DataFrame
@@ -1327,17 +1435,19 @@ def extract_repsly_endpoint(endpoint_key, **context):
         df['_source_system'] = 'repsly'
         df['_endpoint'] = endpoint_key
 
-        logger.info(f"   📊 Prepared {len(df)} records for warehouse load")
+        logger.info(f"📊 DataFrame: {len(df)} rows × {len(df.columns)} columns")
+        logger.info(f"⏰ Extracted: {extracted_at.strftime('%Y-%m-%d %H:%M:%S')} UTC")
 
         # Step 4: CRITICAL - Load to warehouse FIRST (before state updates)
         try:
             records_loaded = load_dataframe_to_warehouse_verified(df, endpoint_key, extracted_at)
             
             if records_loaded == 0:
-                logger.warning(f"⚠️ No records actually loaded for {endpoint_key}")
+                logger.warning(f"⚠️ WARNING: {endpoint_key} completed but no records loaded")
+                logger.info("=" * 100)
                 return 0
                 
-            logger.info(f"✅ VERIFIED: {records_loaded} records loaded to warehouse")
+            logger.info(f"✅ SUCCESS: {endpoint_key} completed - {records_loaded} records loaded")
             
         except Exception as warehouse_error:
             logger.error(f"❌ WAREHOUSE LOAD FAILED: {warehouse_error}")
@@ -1348,22 +1458,25 @@ def extract_repsly_endpoint(endpoint_key, **context):
                 _STATE_CACHE.clear()
                 _STATE_CACHE.update(state_backup)
             
+            logger.info("=" * 100)
             raise  # Fail the task
 
         # Step 5: ONLY NOW update state after verified load
         try:
             update_state_after_verified_load(endpoint_key, endpoint_config, df, raw_data, extracted_at)
-            logger.info("✅ State updated after verified warehouse load")
+            logger.info("✅ State: Updated after verified warehouse load")
             
         except Exception as state_error:
             logger.error(f"❌ STATE UPDATE FAILED: {state_error}")
             # Data is loaded successfully, so don't fail pipeline
             logger.warning("⚠️ Data loaded but state may be inconsistent - next run will detect")
-            
+        
+        logger.info("=" * 100)
         return records_loaded
 
     except Exception as e:
-        logger.error(f"❌ EXTRACTION FAILED for {endpoint_key}: {e}")
+        logger.error(f"❌ FAILED: {endpoint_key} extraction failed")
+        logger.error(f"❌ Error: {str(e)}")
         
         # Restore original state on any failure
         logger.error("🔄 RESTORING original state due to extraction failure")
@@ -1371,6 +1484,7 @@ def extract_repsly_endpoint(endpoint_key, **context):
             _STATE_CACHE.clear()
             _STATE_CACHE.update(state_backup)
         
+        logger.info("=" * 100)
         raise
 
 
@@ -1379,7 +1493,7 @@ def update_state_after_verified_load(endpoint_key, endpoint_config, df, raw_data
     FIXED: Update state ONLY after verified warehouse load - handles ALL pagination types.
     """
     try:
-        logger.info(f"📝 Updating state after VERIFIED load for {endpoint_key}")
+        logger.info(f"📝 State Update: Processing {endpoint_key}")
         
         pagination_type = endpoint_config.get('pagination_type')
         incremental_field = endpoint_config.get('incremental_field')
@@ -1394,7 +1508,7 @@ def update_state_after_verified_load(endpoint_key, endpoint_config, df, raw_data
                     last_id_key = f"{endpoint_key}_last_id"
                     with _STATE_LOCK:
                         _STATE_CACHE[last_id_key] = raw_data[-1][id_field_name]
-                    logger.info(f"   📝 Updated ID state: {raw_data[-1][id_field_name]}")
+                    logger.info(f"🔢 ID State: Updated to {raw_data[-1][id_field_name]}")
             
             # CRITICAL FIX: Always update watermark for ID-based endpoints
             if incremental_field and not df.empty:
@@ -1411,20 +1525,20 @@ def update_state_after_verified_load(endpoint_key, endpoint_config, df, raw_data
                     if valid_timestamps:
                         max_ts = max(valid_timestamps)
                         _update_watermark(endpoint_key, max_ts)
-                        logger.info(f"🕒 ID endpoint watermark from data: {max_ts.isoformat()}")
+                        logger.info(f"🕒 Watermark: ID endpoint from data max: {max_ts.strftime('%Y-%m-%d %H:%M:%S')} UTC")
                     else:
                         # Fallback: Use extraction timestamp for ID-based endpoints
                         _update_watermark(endpoint_key, extracted_at)
-                        logger.info(f"🕒 ID endpoint fallback watermark: {extracted_at.isoformat()}")
+                        logger.info(f"🕒 Watermark: ID endpoint fallback: {extracted_at.strftime('%Y-%m-%d %H:%M:%S')} UTC")
                 else:
                     # CRITICAL FIX: No incremental field found - use extraction timestamp
-                    logger.warning(f"⚠️ Incremental field '{incremental_field}' not found in {endpoint_key} data")
+                    logger.warning(f"⚠️ Watermark: Field '{incremental_field}' not found in {endpoint_key} data")
                     _update_watermark(endpoint_key, extracted_at)
-                    logger.info(f"🕒 ID endpoint extraction timestamp watermark: {extracted_at.isoformat()}")
+                    logger.info(f"🕒 Watermark: ID endpoint extraction time: {extracted_at.strftime('%Y-%m-%d %H:%M:%S')} UTC")
             else:
                 # No incremental field defined - still set watermark to extraction time
                 _update_watermark(endpoint_key, extracted_at)
-                logger.info(f"🕒 ID endpoint no-incremental watermark: {extracted_at.isoformat()}")
+                logger.info(f"🕒 Watermark: ID endpoint no-incremental: {extracted_at.strftime('%Y-%m-%d %H:%M:%S')} UTC")
         
         elif pagination_type == 'timestamp':
             # Timestamp-based pagination: Update timestamp state AND watermark
@@ -1446,21 +1560,21 @@ def update_state_after_verified_load(endpoint_key, endpoint_config, df, raw_data
                     if valid_timestamps:
                         max_ts = max(valid_timestamps)
                         _update_watermark(endpoint_key, max_ts)
-                        logger.info(f"🕒 Timestamp watermark from data: {max_ts.isoformat()}")
+                        logger.info(f"🕒 Watermark: Timestamp from data max: {max_ts.strftime('%Y-%m-%d %H:%M:%S')} UTC")
                     else:
                         _update_watermark(endpoint_key, extracted_at)
-                        logger.info(f"🕒 Timestamp fallback watermark: {extracted_at.isoformat()}")
+                        logger.info(f"🕒 Watermark: Timestamp fallback: {extracted_at.strftime('%Y-%m-%d %H:%M:%S')} UTC")
                 else:
                     _update_watermark(endpoint_key, extracted_at)
-                    logger.info(f"🕒 Timestamp extraction watermark: {extracted_at.isoformat()}")
+                    logger.info(f"🕒 Watermark: Timestamp extraction time: {extracted_at.strftime('%Y-%m-%d %H:%M:%S')} UTC")
             else:
                 _update_watermark(endpoint_key, extracted_at)
-                logger.info(f"🕒 Timestamp no-incremental watermark: {extracted_at.isoformat()}")
+                logger.info(f"🕒 Watermark: Timestamp no-incremental: {extracted_at.strftime('%Y-%m-%d %H:%M:%S')} UTC")
         
         elif pagination_type == 'static':
             # Static endpoints: Only update watermark to extraction time
             _update_watermark(endpoint_key, extracted_at)
-            logger.info(f"🕒 Static endpoint watermark: {extracted_at.isoformat()}")
+            logger.info(f"🕒 Watermark: Static endpoint: {extracted_at.strftime('%Y-%m-%d %H:%M:%S')} UTC")
         
         elif pagination_type == 'datetime_range':
             # Date range endpoints: Update watermark from data or extraction time
@@ -1474,16 +1588,16 @@ def update_state_after_verified_load(endpoint_key, endpoint_config, df, raw_data
                     if valid_timestamps:
                         max_ts = max(valid_timestamps)
                         _update_watermark(endpoint_key, max_ts)
-                        logger.info(f"🕒 Date range watermark from data: {max_ts.isoformat()}")
+                        logger.info(f"🕒 Watermark: Date range from data max: {max_ts.strftime('%Y-%m-%d %H:%M:%S')} UTC")
                     else:
                         _update_watermark(endpoint_key, extracted_at)
-                        logger.info(f"🕒 Date range fallback watermark: {extracted_at.isoformat()}")
+                        logger.info(f"🕒 Watermark: Date range fallback: {extracted_at.strftime('%Y-%m-%d %H:%M:%S')} UTC")
                 else:
                     _update_watermark(endpoint_key, extracted_at)
-                    logger.info(f"🕒 Date range extraction watermark: {extracted_at.isoformat()}")
+                    logger.info(f"🕒 Watermark: Date range extraction time: {extracted_at.strftime('%Y-%m-%d %H:%M:%S')} UTC")
             else:
                 _update_watermark(endpoint_key, extracted_at)
-                logger.info(f"🕒 Date range no-incremental watermark: {extracted_at.isoformat()}")
+                logger.info(f"🕒 Watermark: Date range no-incremental: {extracted_at.strftime('%Y-%m-%d %H:%M:%S')} UTC")
         
         elif pagination_type == 'query_params':
             # Query parameter pagination: Update watermark
@@ -1497,31 +1611,30 @@ def update_state_after_verified_load(endpoint_key, endpoint_config, df, raw_data
                     if valid_timestamps:
                         max_ts = max(valid_timestamps)
                         _update_watermark(endpoint_key, max_ts)
-                        logger.info(f"🕒 Query param watermark from data: {max_ts.isoformat()}")
+                        logger.info(f"🕒 Watermark: Query param from data max: {max_ts.strftime('%Y-%m-%d %H:%M:%S')} UTC")
                     else:
                         _update_watermark(endpoint_key, extracted_at)
-                        logger.info(f"🕒 Query param fallback watermark: {extracted_at.isoformat()}")
+                        logger.info(f"🕒 Watermark: Query param fallback: {extracted_at.strftime('%Y-%m-%d %H:%M:%S')} UTC")
                 else:
                     _update_watermark(endpoint_key, extracted_at)
-                    logger.info(f"🕒 Query param extraction watermark: {extracted_at.isoformat()}")
+                    logger.info(f"🕒 Watermark: Query param extraction time: {extracted_at.strftime('%Y-%m-%d %H:%M:%S')} UTC")
             else:
                 _update_watermark(endpoint_key, extracted_at)
-                logger.info(f"🕒 Query param no-incremental watermark: {extracted_at.isoformat()}")
+                logger.info(f"🕒 Watermark: Query param no-incremental: {extracted_at.strftime('%Y-%m-%d %H:%M:%S')} UTC")
         
         else:
             # Unknown pagination type: Still set watermark
-            logger.warning(f"⚠️ Unknown pagination type '{pagination_type}' for {endpoint_key}")
+            logger.warning(f"⚠️ State: Unknown pagination type '{pagination_type}' for {endpoint_key}")
             _update_watermark(endpoint_key, extracted_at)
-            logger.info(f"🕒 Unknown type watermark: {extracted_at.isoformat()}")
+            logger.info(f"🕒 Watermark: Unknown type: {extracted_at.strftime('%Y-%m-%d %H:%M:%S')} UTC")
         
         # CRITICAL: Save state atomically after all updates
         _save_state()
-        logger.info("✅ State saved after verified load")
+        logger.info("✅ State: Saved after verified load")
         
     except Exception as e:
-        logger.error(f"❌ Failed to update state: {e}")
+        logger.error(f"❌ State: Failed to update - {e}")
         logger.error("❌ CRITICAL: Next run may have data gaps!")
-        raise  # Raise to indicate state corruption
         raise  # Raise to indicate state corruption
 
 
@@ -1532,6 +1645,9 @@ def finalize_state_after_warehouse_load(context):
     State is already updated per endpoint, this is for final cleanup.
     """
     try:
+        logger.info("=" * 80)
+        logger.info("✅ STATE FINALIZATION")
+        logger.info("=" * 80)
         logger.info("✅ All state updates finalized after successful warehouse loads")
         
         # Verify state file integrity
@@ -1543,6 +1659,8 @@ def finalize_state_after_warehouse_load(context):
         except Exception as e:
             logger.error(f"❌ State file integrity check failed: {e}")
         
+        logger.info("=" * 80)
+        
     except Exception as e:
         logger.error(f"❌ Failed to finalize state updates: {e}")
         # Don't raise - we don't want to fail the entire pipeline for state issues
@@ -1550,14 +1668,21 @@ def finalize_state_after_warehouse_load(context):
 # ---------------- EXTRACTION COORDINATION ---------------- #
 def extract_all_endpoints_with_dependencies(**context):
     """Extract all endpoints respecting dependencies and atomic state management."""
-    logger.info("🚀 Starting coordinated extraction with dependency management...")
+    logger.info("=" * 100)
+    logger.info("🚀 MULTI-ENDPOINT EXTRACTION START")
+    logger.info("=" * 100)
+    logger.info(f"📊 Mode: {'TESTING' if TESTING_MODE else 'PRODUCTION'}")
     
     endpoint_order = get_endpoint_execution_order()
     total_records = 0
     extraction_results = {}
     completed_endpoints = set()
     
-    for endpoint_key in endpoint_order:
+    logger.info("=" * 100)
+    
+    for i, endpoint_key in enumerate(endpoint_order, 1):
+        logger.info(f"🔄 Progress: [{i:2d}/{len(endpoint_order)}] Processing {endpoint_key}")
+        
         try:
             # Check dependencies
             endpoint_config = REPSLY_ENDPOINTS.get(endpoint_key, {})
@@ -1566,31 +1691,79 @@ def extract_all_endpoints_with_dependencies(**context):
             # Wait for dependencies (in real implementation, this would be handled by DAG)
             for dep in dependencies:
                 if dep not in completed_endpoints and dep in ENABLED_ENDPOINTS:
-                    logger.warning(f"⚠️ {endpoint_key} dependency {dep} not completed")
+                    logger.warning(f"⚠️ Dependencies: {endpoint_key} dependency {dep} not completed")
             
-            logger.info(f"📊 Extracting {endpoint_key}...")
             records = extract_repsly_endpoint(endpoint_key, **context)
             total_records += records
             extraction_results[endpoint_key] = records
             completed_endpoints.add(endpoint_key)
             
-            logger.info(f"✅ {endpoint_key}: {records} records loaded")
+            logger.info(f"✅ Completed: {endpoint_key} → {records} records")
             
         except Exception as e:
-            logger.error(f"❌ {endpoint_key} failed: {e}")
+            logger.error(f"❌ Failed: {endpoint_key} → {str(e)}")
             extraction_results[endpoint_key] = f"Failed: {e}"
             # Continue with other endpoints instead of failing everything
             continue
     
-    # Final summary
-    logger.info("📈 Extraction Summary:")
-    for endpoint, result in extraction_results.items():
-        if isinstance(result, int):
-            logger.info(f"   {endpoint}: {result} records")
-        else:
-            logger.info(f"   {endpoint}: {result}")
+    logger.info("=" * 100)
+    logger.info("🎉 MULTI-ENDPOINT EXTRACTION COMPLETE")
+    logger.info("=" * 100)
+    logger.info(f"📊 Total Records: {total_records:,}")
+    logger.info(f"✅ Successful: {len(completed_endpoints)}/{len(endpoint_order)} endpoints")
+    logger.info(f"❌ Failed: {len(endpoint_order) - len(completed_endpoints)}/{len(endpoint_order)} endpoints")
     
-    logger.info(f"✅ Coordinated extraction complete. Total records: {total_records}")
+    # Summary by category
+    successful = [ep for ep, result in extraction_results.items() if isinstance(result, int)]
+    failed = [ep for ep, result in extraction_results.items() if isinstance(result, str)]
+    
+    if successful:
+        logger.info("✅ Successful Endpoints:")
+        for ep in successful:
+            endpoint_config = REPSLY_ENDPOINTS[ep]
+            pagination_type = endpoint_config.get('pagination_type', 'unknown').upper()
+            logger.info(f"   ├─ {ep:<25} [{pagination_type:<15}] → {extraction_results[ep]:>6,} records")
+    
+    if failed:
+        logger.info("❌ Failed Endpoints:")
+        for ep in failed:
+            endpoint_config = REPSLY_ENDPOINTS[ep]
+            pagination_type = endpoint_config.get('pagination_type', 'unknown').upper()
+            logger.info(f"   ├─ {ep:<25} [{pagination_type:<15}] → {extraction_results[ep]}")
+    
+    # Category breakdown
+    def format_endpoint_list(endpoint_list):
+        """Format endpoint list with pagination type indicators"""
+        formatted = []
+        for ep in endpoint_list:
+            endpoint_config = REPSLY_ENDPOINTS[ep]
+            pagination_type = endpoint_config.get('pagination_type', 'unknown')
+            # Use single letter indicators
+            type_map = {'static': 'S', 'id': 'I', 'timestamp': 'T', 'datetime_range': 'D', 'query_params': 'Q'}
+            type_indicator = type_map.get(pagination_type, 'U')
+            formatted.append(f"{ep}[{type_indicator}]")
+        return ', '.join(formatted)
+    
+    # Group by pagination type
+    static_endpoints = [ep for ep in successful if REPSLY_ENDPOINTS.get(ep, {}).get('pagination_type') == 'static']
+    id_endpoints = [ep for ep in successful if REPSLY_ENDPOINTS.get(ep, {}).get('pagination_type') == 'id']
+    timestamp_endpoints = [ep for ep in successful if REPSLY_ENDPOINTS.get(ep, {}).get('pagination_type') == 'timestamp']
+    datetime_endpoints = [ep for ep in successful if REPSLY_ENDPOINTS.get(ep, {}).get('pagination_type') == 'datetime_range']
+    query_endpoints = [ep for ep in successful if REPSLY_ENDPOINTS.get(ep, {}).get('pagination_type') == 'query_params']
+    
+    if static_endpoints:
+        logger.info(f"📊 Static Endpoints: {format_endpoint_list(static_endpoints)}")
+    if id_endpoints:
+        logger.info(f"🔢 ID-based Endpoints: {format_endpoint_list(id_endpoints)}")
+    if timestamp_endpoints:
+        logger.info(f"⏰ Timestamp Endpoints: {format_endpoint_list(timestamp_endpoints)}")
+    if datetime_endpoints:
+        logger.info(f"📅 Date Range Endpoints: {format_endpoint_list(datetime_endpoints)}")
+    if query_endpoints:
+        logger.info(f"🔍 Query Param Endpoints: {format_endpoint_list(query_endpoints)}")
+    
+    logger.info("📝 Legend: [S]=Static, [I]=ID-based, [T]=Timestamp, [D]=Date Range, [Q]=Query Params")
+    logger.info("=" * 100)
     
     return {
         'total_records': total_records,
