@@ -30,6 +30,8 @@ ENABLED_ENDPOINTS: Dict[str, str] = {}
 _STATE_CACHE: Dict[str, str] = {}
 _STATE_LOCK = threading.Lock()
 _STATE_DIR_CREATED = False
+_STATE_TABLE = "meta.pipeline_state"
+_STATE_HISTORY_TABLE = "meta.pipeline_state_history"   # set to None to skip auditing
 
 # Global session cache for connection pooling
 _SESSION_CACHE = None
@@ -334,99 +336,167 @@ def smart_rate_limit(response, config):
 
 # ---------------- THREAD-SAFE INCREMENTAL STATE MANAGEMENT ---------------- #
 def _state_path():
-    return CONFIG['extraction']['incremental']['state_path']
+    return "<state stored in ClickHouse meta.pipeline_state>"
+
 
 def _ensure_state_dir():
-    """Ensure state directory exists."""
+    """
+    Creates/validates the metadata tables exactly once.
+    - meta.pipeline_state_latest   : current value per (source_system, state_key)
+    - meta.pipeline_state_history  : full audit trail
+    """
     global _STATE_DIR_CREATED
     if _STATE_DIR_CREATED:
         return
-    path = _state_path()
-    directory = os.path.dirname(path)
-    if directory:
-        os.makedirs(directory, exist_ok=True)
-    _STATE_DIR_CREATED = True
+
+    client = _get_state_client()
+    try:
+        client.command("CREATE DATABASE IF NOT EXISTS meta")
+
+        # Latest value (one row per key & source, replaces older rows)
+        client.command("""
+            CREATE TABLE IF NOT EXISTS meta.pipeline_state_latest (
+                source_system String,
+                state_key     String,
+                state_value   String,
+                updated_at    DateTime64(3) DEFAULT now()
+            ) ENGINE = ReplacingMergeTree(updated_at)
+            ORDER BY (source_system, state_key)
+        """)
+
+        # History (every mutation kept forever)
+        client.command("""
+            CREATE TABLE IF NOT EXISTS meta.pipeline_state_history (
+                source_system String,
+                state_key     String,
+                state_value   String,
+                updated_at    DateTime64(3)
+            ) ENGINE = MergeTree()
+            PARTITION BY toYYYYMM(updated_at)
+            ORDER BY (source_system, state_key, updated_at)
+        """)
+
+        logger.info("✅ metadata tables ready in meta.*")
+        _STATE_DIR_CREATED = True
+    finally:
+        client.close()
+
+
+
+
 
 def _load_state():
-    """Load watermark state JSON (endpoint -> ISO timestamp) - THREAD SAFE."""
+    """
+    Hydrate in-memory cache with the latest state for this source_system.
+    Robust to:
+      • first-run (tables don’t exist yet)
+      • ClickHouse temporarily unavailable during DAG parsing
+    """
+    import json
     global _STATE_CACHE
-    
+
     with _STATE_LOCK:
-        _ensure_state_dir()
-        path = _state_path()
-        
-        if not os.path.exists(path):
-            _STATE_CACHE = {}
-            logger.info("📁 No existing state file found, starting fresh")
-            return
-        
         try:
-            # Check if file is empty
-            if os.path.getsize(path) == 0:
-                logger.warning("📁 State file is empty, starting fresh")
-                _STATE_CACHE = {}
-                return
-                
-            with open(path, 'r') as f:
-                content = f.read().strip()
-                if not content:
-                    logger.warning("📁 State file content is empty, starting fresh")
-                    _STATE_CACHE = {}
-                    return
-                _STATE_CACHE = json.loads(content)
-            logger.info(f"📁 Loaded state from {path}: {_STATE_CACHE}")
-        except json.JSONDecodeError as e:
-            logger.warning(f"⚠️ Invalid JSON in state file {path}: {e}. Starting fresh.")
-            _STATE_CACHE = {}
+            _ensure_state_dir()   # will create tables if they’re missing
         except Exception as e:
-            logger.warning(f"⚠️ Failed to load state file {path}: {e}")
+            # ClickHouse unreachable — start with empty state so DAG can parse
+            logger.warning(f"⚠️  ClickHouse not reachable during DAG parse: {e}")
             _STATE_CACHE = {}
+            return
+
+        source_system = (
+            CONFIG.get("extraction", {}).get("source_system")
+            or __name__.split(".")[-2]          # e.g. 'repsly'
+        )
+
+        client = _get_state_client()
+        try:
+            rows = client.query(
+                f"""
+                SELECT state_key, anyLast(state_value)
+                FROM meta.pipeline_state_latest
+                WHERE source_system = %(src)s
+                GROUP BY state_key
+                """,
+                {"src": source_system},
+            ).result_rows
+        except Exception as qe:
+            # Table might not exist yet (first ever run) — make sure then retry once
+            if "UNKNOWN_TABLE" in str(qe):
+                logger.info("ℹ️  metadata tables not found — creating them now")
+                _ensure_state_dir()
+                rows = []  # nothing stored yet
+            else:
+                logger.warning(f"⚠️  Failed to read state table: {qe}")
+                rows = []
+        finally:
+            client.close()
+
+        _STATE_CACHE = {}
+        for k, v in rows:
+            try:
+                _STATE_CACHE[k] = json.loads(v)
+            except Exception:
+                _STATE_CACHE[k] = v  # fallback raw string
+
+        logger.info(
+            f"📁 Loaded {len(_STATE_CACHE)} state entries for source '{source_system}'"
+        )
+
+
+
 
 def _save_state():
-    """Save watermark state to file - THREAD SAFE with atomic write."""
+    """
+    Persist in-memory cache:
+    ▸ append row(s) to history
+    ▸ insert/replace row(s) in latest
+    Values are JSON-encoded strings for type safety.
+    """
+    import json
+    from datetime import datetime
+
     with _STATE_LOCK:
         _ensure_state_dir()
-        path = _state_path()
-        temp_path = f"{path}.tmp"
-        
+        if not _STATE_CACHE:
+            logger.info("💾 Cache empty — nothing to persist")
+            return
+
+        source_system = (
+            CONFIG.get("extraction", {}).get("source_system")
+            or __name__.split(".")[-2]  # e.g. 'repsly' from .../repsly/extractor.py
+        )
+
+        now_ts = datetime.utcnow()
+        rows = [
+            (source_system, k, json.dumps(v), now_ts)
+            for k, v in _STATE_CACHE.items()
+        ]
+
+        client = _get_state_client()
         try:
-            # Create checksum for verification
-            state_json = json.dumps(_STATE_CACHE, indent=2, sort_keys=True)
-            checksum = hashlib.md5(state_json.encode()).hexdigest()
-            
-            logger.info(f"💾 Saving state to {path}: {_STATE_CACHE}")
-            
-            # Atomic write: write to temp file first
-            with open(temp_path, 'w') as f:
-                f.write(state_json)
-                f.flush()
-                os.fsync(f.fileno())  # Force write to disk
-            
-            # Verify temp file
-            with open(temp_path, 'r') as f:
-                verify_content = f.read()
-                verify_checksum = hashlib.md5(verify_content.encode()).hexdigest()
-                
-            if verify_checksum != checksum:
-                raise ValueError("State file verification failed - checksum mismatch")
-            
-            # Atomic move
-            if os.name == 'nt':  # Windows
-                if os.path.exists(path):
-                    os.remove(path)
-            os.rename(temp_path, path)
-            
-            logger.info(f"💾 Successfully saved watermark state to {path} (checksum: {checksum[:8]})")
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to save state file {path}: {e}")
-            # Clean up temp file
-            if os.path.exists(temp_path):
-                try:
-                    os.remove(temp_path)
-                except:
-                    pass
-            raise
+            # History first (keeps every version)
+            client.insert(
+                "meta.pipeline_state_history",
+                rows,
+                column_names=["source_system", "state_key", "state_value", "updated_at"],
+            )
+            # Latest (ReplacingMergeTree will collapse on read)
+            client.insert(
+                "meta.pipeline_state_latest",
+                rows,
+                column_names=["source_system", "state_key", "state_value", "updated_at"],
+            )
+            logger.info(
+                f"💾 Persisted {len(rows)} state entries for source '{source_system}' "
+                "to history + latest tables"
+            )
+        finally:
+            client.close()
+
+
+
+
 
 def _get_last_watermark(endpoint_key: str) -> Optional[datetime]:
     """Get last watermark for endpoint - THREAD SAFE."""
@@ -572,6 +642,33 @@ def _get_incremental_date_range(endpoint_key: str):
 
 
 # ---------------- SAFE WAREHOUSE LOADING FUNCTIONS ---------------- #
+
+def _get_state_client():
+    """
+    Lightweight ClickHouse client for state operations.
+    Re-uses the same environment variables you already set for warehouse loads.
+    """
+    import clickhouse_connect
+
+    host = os.getenv('CLICKHOUSE_HOST')
+    port = int(os.getenv('CLICKHOUSE_PORT', 8443))
+    database = os.getenv('CLICKHOUSE_DATABASE', 'default')
+    username = os.getenv('CLICKHOUSE_USER', 'default')
+    password = os.getenv('CLICKHOUSE_PASSWORD')
+
+    if not all([host, password]):
+        raise ValueError("ClickHouse connection parameters missing for state backend")
+
+    return clickhouse_connect.get_client(
+        host=host,
+        port=port,
+        username=username,
+        password=password,
+        database=database,
+        secure=True
+    )
+
+
 def table_exists(client, full_table):
     """Check if table exists in ClickHouse."""
     try:
@@ -1528,24 +1625,17 @@ def update_state_after_verified_load(endpoint_key, endpoint_config, df, raw_data
 # ---------------- DAG INTEGRATION FUNCTIONS ---------------- #
 def finalize_state_after_warehouse_load(context):
     """
-    Finalize state updates after successful warehouse loading.
-    State is already updated per endpoint, this is for final cleanup.
+    Simple end-of-DAG sanity check now that state is DB-backed.
     """
     try:
-        logger.info("✅ All state updates finalized after successful warehouse loads")
-        
-        # Verify state file integrity
-        try:
-            with open(_state_path(), 'r') as f:
-                state_content = f.read()
-                json.loads(state_content)  # Verify it's valid JSON
-            logger.info("✅ State file integrity verified")
-        except Exception as e:
-            logger.error(f"❌ State file integrity check failed: {e}")
-        
+        _ensure_state_dir()
+        client = _get_state_client()
+        count = client.query("SELECT count() FROM meta.etl_state").result_rows[0][0]
+        client.close()
+        logger.info(f"✅ State table integrity verified – {count} keys currently stored")
     except Exception as e:
-        logger.error(f"❌ Failed to finalize state updates: {e}")
-        # Don't raise - we don't want to fail the entire pipeline for state issues
+        logger.error(f"❌ State integrity check failed: {e}")
+
 
 # ---------------- EXTRACTION COORDINATION ---------------- #
 def extract_all_endpoints_with_dependencies(**context):

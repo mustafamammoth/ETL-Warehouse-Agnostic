@@ -44,8 +44,11 @@ def _due_this_run(cron_expr: str, logical_dt: datetime) -> bool:
            get_next(datetime) == logical_dt
 
 def _run_company(company_cfg, **context):
-    """Initialise extractor for a single company and run all endpoints."""
     cfg = copy.deepcopy(config)
+
+    # NEW ─ identify the state rows for this run
+    cfg['extraction']['source_system'] = f"leaflink_{company_cfg['region']}"
+
     cfg['warehouse']['schemas']['raw_schema'] = company_cfg['raw_schema']
     cfg['extraction']['incremental']['state_path'] = (
         f"/opt/airflow/state/leaflink_{company_cfg['region']}_watermarks.json"
@@ -56,6 +59,7 @@ def _run_company(company_cfg, **context):
         raw_schema=company_cfg['raw_schema'],
         **context
     )
+
 
 def run_coordinated_extraction(**context):
     """
@@ -692,165 +696,82 @@ def check_clickhouse_data_quality_enhanced():
         raise
 
 def monitor_warehouse_health(**context):
-    """Monitor warehouse health with enhanced metrics for LeafLink."""
-    logger.info("🏥 Monitoring warehouse health for LeafLink...")
-    
-    try:
-        import clickhouse_connect
-        
-        # Connection parameters
-        host = os.getenv('CLICKHOUSE_HOST')
-        port = int(os.getenv('CLICKHOUSE_PORT', 8443))
-        database = os.getenv('CLICKHOUSE_DATABASE', 'default')
-        username = os.getenv('CLICKHOUSE_USER', 'default')
-        password = os.getenv('CLICKHOUSE_PASSWORD')
-        
-        client = clickhouse_connect.get_client(
-            host=host, port=port, username=username, password=password,
-            database=database, secure=True
-        )
-        
-        raw_schema = config['warehouse']['schemas']['raw_schema']
-        health_status = {
-            'overall_status': 'HEALTHY',
-            'database_accessible': False,
+    """
+    Check ClickHouse accessibility and basic table health for **each company
+    schema** listed in leaflink.yml → companies[].raw_schema.
+    Aggregates the per-schema results into one report.
+    """
+    import clickhouse_connect
+    logger.info("🏥 Monitoring warehouse health for LeafLink (multi-schema) …")
+
+    # Map region → raw_schema from config
+    region_to_schema = {
+        c['region']: c['raw_schema'] for c in config.get('companies', [])
+    }
+
+    # ------ connect once ------
+    client = clickhouse_connect.get_client(
+        host=os.getenv('CLICKHOUSE_HOST'),
+        port=int(os.getenv('CLICKHOUSE_PORT', 8443)),
+        username=os.getenv('CLICKHOUSE_USER', 'default'),
+        password=os.getenv('CLICKHOUSE_PASSWORD'),
+        database=os.getenv('CLICKHOUSE_DATABASE', 'default'),
+        secure=True
+    )
+
+    overall = {
+        'overall_status': 'HEALTHY',
+        'schemas': {},
+        'issues': [],
+        'recommendations': []
+    }
+
+    for region, raw_schema in region_to_schema.items():
+        schema_report = {
             'tables_analyzed': 0,
             'partitioned_tables': 0,
-            'issues': [],
-            'recommendations': []
+            'issues': []
         }
-        
-        # Check database accessibility and create if needed
+        logger.info(f"🔎 Analysing schema {raw_schema} ({region.upper()})")
+
         try:
-            databases = client.query("SHOW DATABASES")
-            db_names = [row[0] for row in databases.result_rows]
-            
-            if raw_schema not in db_names:
-                if raw_schema != 'default':
-                    logger.info(f"🆕 Creating database {raw_schema}")
-                    client.command(f"CREATE DATABASE IF NOT EXISTS `{raw_schema}`")
-                    health_status['database_accessible'] = True
-                    health_status['recommendations'].append(f"Created missing database {raw_schema}")
-                    logger.info(f"✅ Created database {raw_schema}")
+            # create in case it doesn't exist
+            client.command(f"CREATE DATABASE IF NOT EXISTS `{raw_schema}`")
+            tables = client.query(f"SHOW TABLES FROM `{raw_schema}`").result_rows
+            table_names = [t[0] for t in tables]
+            schema_report['tables_analyzed'] = len(table_names)
+
+            for t in table_names:
+                ddl = client.query(
+                    f"SHOW CREATE TABLE `{raw_schema}`.`{t}`"
+                ).result_rows[0][0]
+
+                if "PARTITION BY" in ddl:
+                    schema_report['partitioned_tables'] += 1
                 else:
-                    health_status['database_accessible'] = True
-            else:
-                health_status['database_accessible'] = True
-                logger.info(f"✅ Database {raw_schema} is accessible")
-                
-                # Get table information
-                tables = client.query(f"SHOW TABLES FROM `{raw_schema}`")
-                table_names = [row[0] for row in tables.result_rows]
-                health_status['tables_analyzed'] = len(table_names)
-                
-                for table_name in table_names:
-                    try:
-                        # Check table engine and structure
-                        table_info = client.query(f"SHOW CREATE TABLE `{raw_schema}`.`{table_name}`")
-                        create_statement = table_info.result_rows[0][0]
-                        
-                        # Check partitioning
-                        if "PARTITION BY" in create_statement:
-                            health_status['partitioned_tables'] += 1
-                            
-                            # Get basic row count for partitioned tables
-                            try:
-                                count_result = client.query(f"SELECT count() FROM `{raw_schema}`.`{table_name}`")
-                                row_count = count_result.result_rows[0][0]
-                                logger.info(f"   📊 {table_name}: {row_count:,} total rows (partitioned)")
-                            except Exception as count_error:
-                                logger.warning(f"   ❌ {table_name}: Could not get row count: {count_error}")
-                                health_status['issues'].append(f"{table_name}: Cannot access table data")
-                        else:
-                            # Non-partitioned table
-                            logger.warning(f"   ⚠️ {table_name}: NOT PARTITIONED")
-                            health_status['issues'].append(f"{table_name}: Table is not partitioned")
-                            health_status['recommendations'].append(f"Recreate {table_name} with partitioning for better performance")
-                            
-                            try:
-                                count_result = client.query(f"SELECT count() FROM `{raw_schema}`.`{table_name}`")
-                                row_count = count_result.result_rows[0][0]
-                                logger.warning(f"   📊 {table_name}: {row_count:,} rows (NOT PARTITIONED)")
-                            except Exception as e:
-                                logger.error(f"   ❌ {table_name}: Could not access table: {e}")
-                                health_status['issues'].append(f"{table_name}: Table inaccessible")
-                                
-                    except Exception as e:
-                        logger.error(f"   ❌ {table_name}: Could not analyze table structure: {e}")
-                        health_status['issues'].append(f"{table_name}: Structure analysis failed")
-        
+                    schema_report['issues'].append(f"{t}: not partitioned")
+                    overall['recommendations'].append(
+                        f"{t}@{raw_schema}: recreate with partitioning"
+                    )
+
         except Exception as e:
-            # Try to create the database
-            try:
-                if raw_schema != 'default':
-                    logger.info(f"🆕 Attempting to create missing database {raw_schema}")
-                    client.command(f"CREATE DATABASE IF NOT EXISTS `{raw_schema}`")
-                    health_status['database_accessible'] = True
-                    health_status['recommendations'].append(f"Auto-created missing database {raw_schema}")
-                    logger.info(f"✅ Successfully created database {raw_schema}")
-                else:
-                    health_status['database_accessible'] = True
-            except Exception as create_error:
-                health_status['database_accessible'] = False
-                health_status['overall_status'] = 'CRITICAL'
-                health_status['issues'].append(f"Cannot create database {raw_schema}: {create_error}")
-                logger.error(f"❌ Failed to create database {raw_schema}: {create_error}")
-        
-        # Determine final health status
-        if health_status['issues']:
-            if health_status['database_accessible']:
-                health_status['overall_status'] = 'DEGRADED'
-            else:
-                health_status['overall_status'] = 'CRITICAL'
-        
-        # Summary
-        partitioned_ratio = 0
-        if health_status['tables_analyzed'] > 0:
-            partitioned_ratio = health_status['partitioned_tables'] / health_status['tables_analyzed']
-        
-        logger.info(f"🏥 Warehouse Health Summary:")
-        logger.info(f"   Status: {health_status['overall_status']}")
-        logger.info(f"   Tables analyzed: {health_status['tables_analyzed']}")
-        logger.info(f"   Partitioned tables: {health_status['partitioned_tables']} ({partitioned_ratio:.1%})")
-        logger.info(f"   Issues: {len(health_status['issues'])}")
-        logger.info(f"   Recommendations: {len(health_status['recommendations'])}")
-        
-        if health_status['issues']:
-            logger.warning("⚠️ Issues detected:")
-            for issue in health_status['issues']:
-                logger.warning(f"   {issue}")
-        
-        if health_status['recommendations']:
-            logger.info("💡 Recommendations:")
-            for rec in health_status['recommendations']:
-                logger.info(f"   {rec}")
-        
-        client.close()
-        
-        # Store health status for monitoring
-        context['task_instance'].xcom_push(key='warehouse_health', value=health_status)
-        
-        # Only raise alert for truly critical issues
-        critical_issues = [
-            issue for issue in health_status['issues'] 
-            if not (issue.startswith("Database") and "not found" in issue)
-            and not (issue.startswith("Cannot create database") and "already exists" in str(issue))
-        ]
-        
-        if critical_issues:
-            health_status['overall_status'] = 'CRITICAL'
-            raise ValueError(f"Critical warehouse health issues detected: {critical_issues}")
-        elif health_status['issues']:
-            health_status['overall_status'] = 'DEGRADED'
-            logger.warning(f"⚠️ Non-critical health issues detected: {health_status['issues']}")
-        else:
-            health_status['overall_status'] = 'HEALTHY'
-        
-        return health_status
-        
-    except Exception as e:
-        logger.error(f"❌ Warehouse health check failed: {e}")
-        raise
+            msg = f"{raw_schema}: cannot analyse – {e}"
+            schema_report['issues'].append(msg)
+            overall['issues'].append(msg)
+
+        overall['schemas'][raw_schema] = schema_report
+
+    client.close()
+
+    # decide global status
+    if overall['issues']:
+        overall['overall_status'] = 'DEGRADED'
+        logger.warning(f"⚠️ Warehouse issues: {overall['issues']}")
+
+    context['task_instance'].xcom_push(key='warehouse_health', value=overall)
+    logger.info("✅ Warehouse health check complete")
+    return overall
+
 
 # ---------------- PIPELINE SUMMARY ---------------- #
 def send_pipeline_success_notification(**context):

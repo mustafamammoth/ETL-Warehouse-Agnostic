@@ -46,6 +46,7 @@ api:
 
 extraction:
   mode: "production"  # Changed from testing to production
+  source_system: leaflink
   incremental:
     enabled: true
     lookback_minutes: 30           # More overlap to prevent gaps

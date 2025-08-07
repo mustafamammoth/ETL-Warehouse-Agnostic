@@ -43,6 +43,7 @@ api:
 
 extraction:
   mode: "production"  # FIXED: Changed from testing to production
+  source_system: repsly
   incremental:
     enabled: true
     lookback_minutes: 30           # INCREASED: More overlap to prevent gaps

@@ -26,7 +26,7 @@ ENDPOINTS_CONFIG: Dict[str, Dict[str, Any]] = {}
 ENABLED_ENDPOINTS: Dict[str, str] = {}
 
 # GLOBAL REFERENCE DATA REFRESH INTERVAL (in hours)
-REFERENCE_DATA_REFRESH_HOURS = 24  # Change this value to adjust refresh frequency for all reference data
+# REFERENCE_DATA_REFRESH_HOURS = 24  # Change this value to adjust refresh frequency for all reference data
 
 # ---------------- THREAD-SAFE STATE MANAGEMENT ---------------- #
 _STATE_CACHE: Dict[str, str] = {}
@@ -153,6 +153,8 @@ LEAFLINK_ENDPOINTS = {
         'total_count_field': 'count',
         'next_field': 'next',
         'incremental_field': None,  # Reference data - uses global refresh interval
+        'incremental_strategy': 'offset_based',  # NEW: Use offset-based incremental
+
         'priority': 'high',
         'supports_company_scope': False,
         'date_filters': {},
@@ -201,6 +203,8 @@ LEAFLINK_ENDPOINTS = {
         'total_count_field': 'count',
         'next_field': 'next',
         'incremental_field': None,  # Reference data - uses global refresh interval
+        'incremental_strategy': 'offset_based',  # NEW: Use offset-based incremental
+
         'priority': 'high',
         'supports_company_scope': True,
         'date_filters': {},
@@ -216,6 +220,8 @@ LEAFLINK_ENDPOINTS = {
         'total_count_field': 'count',
         'next_field': 'next',
         'incremental_field': None,  # Reference data - uses global refresh interval
+        'incremental_strategy': 'offset_based',  # NEW: Use offset-based incremental
+
         'priority': 'high',
         'supports_company_scope': False,
         'date_filters': {},
@@ -322,6 +328,8 @@ LEAFLINK_ENDPOINTS = {
         'total_count_field': 'count',
         'next_field': 'next',
         'incremental_field': None,  # Reference data - uses global refresh interval
+        'incremental_strategy': 'offset_based',  # NEW: Use offset-based incremental
+
         'priority': 'low',
         'supports_company_scope': False,
         'date_filters': {},
@@ -337,6 +345,8 @@ LEAFLINK_ENDPOINTS = {
         'total_count_field': 'count',
         'next_field': 'next',
         'incremental_field': None,  # Reference data - uses global refresh interval
+        'incremental_strategy': 'offset_based',  # NEW: Use offset-based incremental
+
         'priority': 'low',
         'supports_company_scope': False,
         'date_filters': {},
@@ -353,6 +363,8 @@ LEAFLINK_ENDPOINTS = {
         'total_count_field': 'count',
         'next_field': 'next',
         'incremental_field': None,  # Reference data - company info rarely changes
+        'incremental_strategy': 'offset_based',  # NEW: Use offset-based incremental
+
         'priority': 'high',
         'supports_company_scope': False,
         'date_filters': {},
@@ -400,6 +412,8 @@ LEAFLINK_ENDPOINTS = {
         'total_count_field': 'count',
         'next_field': 'next',
         'incremental_field': None,  # Reference data - uses global refresh interval
+        'incremental_strategy': 'offset_based',  # NEW: Use offset-based incremental
+
         'priority': 'low',
         'supports_company_scope': True,
         'date_filters': {},
@@ -557,6 +571,26 @@ def create_authenticated_session():
 # ---------------- UTILITIES ---------------- #
 # Enhanced flatten_leaflink_record function with specific column handling
 # Add this to replace the existing flatten_leaflink_record function in extractor.py
+
+def _get_state_client():
+    """
+    Minimal ClickHouse client for state I/O.  Re-uses the same env vars as data loads.
+    """
+    import clickhouse_connect
+    host = os.getenv('CLICKHOUSE_HOST')
+    port = int(os.getenv('CLICKHOUSE_PORT', 8443))
+    database = os.getenv('CLICKHOUSE_DATABASE', 'default')
+    username = os.getenv('CLICKHOUSE_USER', 'default')
+    password = os.getenv('CLICKHOUSE_PASSWORD')
+
+    if not all([host, password]):
+        raise ValueError("ClickHouse connection parameters missing for state backend")
+
+    return clickhouse_connect.get_client(
+        host=host, port=port, username=username, password=password,
+        database=database, secure=True
+    )
+
 
 def flatten_leaflink_record(record: Dict[str, Any]) -> Dict[str, Any]:
     """Flatten LeafLink record structure with special handling for nested objects and enhanced JSON flattening."""
@@ -723,95 +757,151 @@ def smart_rate_limit(response, config):
     else:
         time.sleep(1.0 / config['api']['rate_limiting']['requests_per_second'])
 
+
+def _get_state_client():
+    """
+    Lightweight ClickHouse client for state metadata operations.
+    """
+    import clickhouse_connect
+    host = os.getenv('CLICKHOUSE_HOST')
+    port = int(os.getenv('CLICKHOUSE_PORT', 8443))
+    database = os.getenv('CLICKHOUSE_DATABASE', 'default')
+    username = os.getenv('CLICKHOUSE_USER', 'default')
+    password = os.getenv('CLICKHOUSE_PASSWORD')
+
+    if not all([host, password]):
+        raise ValueError("ClickHouse connection parameters missing for state backend")
+
+    return clickhouse_connect.get_client(
+        host=host,
+        port=port,
+        username=username,
+        password=password,
+        database=database,
+        secure=True,
+    )
+
+
+
 # ---------------- THREAD-SAFE INCREMENTAL STATE MANAGEMENT ---------------- #
 def _state_path():
-    return CONFIG['extraction']['incremental']['state_path']
+    return "<state stored in ClickHouse – no file path>"
+
+
 
 def _ensure_state_dir():
-    """Ensure state directory exists."""
+    """
+    Creates metadata tables exactly once:
+      • meta.pipeline_state_latest   – ReplacingMergeTree  (latest per key)
+      • meta.pipeline_state_history  – MergeTree          (full audit)
+    """
     global _STATE_DIR_CREATED
     if _STATE_DIR_CREATED:
         return
-    path = _state_path()
-    directory = os.path.dirname(path)
-    if directory:
-        os.makedirs(directory, exist_ok=True)
-    _STATE_DIR_CREATED = True
+
+    client = _get_state_client()
+    try:
+        client.command("CREATE DATABASE IF NOT EXISTS meta")
+
+        client.command("""
+            CREATE TABLE IF NOT EXISTS meta.pipeline_state_latest (
+                source_system String,
+                state_key     String,
+                state_value   String,
+                updated_at    DateTime64(3) DEFAULT now()
+            ) ENGINE = ReplacingMergeTree(updated_at)
+            ORDER BY (source_system, state_key)
+        """)
+
+        client.command("""
+            CREATE TABLE IF NOT EXISTS meta.pipeline_state_history (
+                source_system String,
+                state_key     String,
+                state_value   String,
+                updated_at    DateTime64(3)
+            ) ENGINE = MergeTree()
+            PARTITION BY toYYYYMM(updated_at)
+            ORDER BY (source_system, state_key, updated_at)
+        """)
+
+        logger.info("✅ metadata tables ready (meta.pipeline_state_latest & history)")
+        _STATE_DIR_CREATED = True
+    finally:
+        client.close()
+
+
 
 def _load_state():
-    """Load watermark state JSON (endpoint -> ISO timestamp or offset) - THREAD SAFE."""
+    """
+    Hydrate cache from ClickHouse (latest rows only).
+    """
+    import json
     global _STATE_CACHE
-    
+
     with _STATE_LOCK:
-        _ensure_state_dir()
-        path = _state_path()
-        
-        if not os.path.exists(path):
-            _STATE_CACHE = {}
-            logger.info("📁 No existing state file found, starting fresh")
-            return
-        
         try:
-            if os.path.getsize(path) == 0:
-                logger.warning("📁 State file is empty, starting fresh")
-                _STATE_CACHE = {}
-                return
-                
-            with open(path, 'r') as f:
-                content = f.read().strip()
-                if not content:
-                    logger.warning("📁 State file content is empty, starting fresh")
-                    _STATE_CACHE = {}
-                    return
-                _STATE_CACHE = json.loads(content)
-            logger.info(f"📁 Loaded state from {path}: {_STATE_CACHE}")
-        except json.JSONDecodeError as e:
-            logger.warning(f"⚠️ Invalid JSON in state file {path}: {e}. Starting fresh.")
-            _STATE_CACHE = {}
+            _ensure_state_dir()
         except Exception as e:
-            logger.warning(f"⚠️ Failed to load state file {path}: {e}")
+            logger.warning(f"⚠️  ClickHouse unreachable – state starts empty ({e})")
             _STATE_CACHE = {}
+            return
+
+        src = CONFIG.get("extraction", {}).get("source_system", "leaflink")
+
+        client = _get_state_client()
+        try:
+            rows = client.query(
+                """
+                SELECT state_key, anyLast(state_value)
+                  FROM meta.pipeline_state_latest
+                 WHERE source_system = %(src)s
+                 GROUP BY state_key
+                """,
+                {"src": src}
+            ).result_rows
+        finally:
+            client.close()
+
+        _STATE_CACHE = {}
+        for k, v in rows:
+            try:
+                _STATE_CACHE[k] = json.loads(v)
+            except Exception:
+                _STATE_CACHE[k] = v
+
+        logger.info(f"📁 Loaded {len(_STATE_CACHE)} state rows for '{src}'")
+
 
 def _save_state():
-    """Save watermark state to file - THREAD SAFE with atomic write."""
+    """
+    Write the in-memory cache to ClickHouse:
+      ▸ append to history
+      ▸ insert/replace into latest
+    """
+    import json
+    from datetime import datetime
+
     with _STATE_LOCK:
         _ensure_state_dir()
-        path = _state_path()
-        temp_path = f"{path}.tmp"
-        
+        if not _STATE_CACHE:
+            logger.info("💾 Cache empty – nothing to persist")
+            return
+
+        src = CONFIG.get("extraction", {}).get("source_system", "leaflink")
+        now = datetime.utcnow()
+        rows = [(src, k, json.dumps(v), now) for k, v in _STATE_CACHE.items()]
+
+        client = _get_state_client()
         try:
-            state_json = json.dumps(_STATE_CACHE, indent=2, sort_keys=True)
-            checksum = hashlib.md5(state_json.encode()).hexdigest()
-            
-            logger.info(f"💾 Saving state to {path}: {_STATE_CACHE}")
-            
-            with open(temp_path, 'w') as f:
-                f.write(state_json)
-                f.flush()
-                os.fsync(f.fileno())
-            
-            with open(temp_path, 'r') as f:
-                verify_content = f.read()
-                verify_checksum = hashlib.md5(verify_content.encode()).hexdigest()
-                
-            if verify_checksum != checksum:
-                raise ValueError("State file verification failed - checksum mismatch")
-            
-            if os.name == 'nt':
-                if os.path.exists(path):
-                    os.remove(path)
-            os.rename(temp_path, path)
-            
-            logger.info(f"💾 Successfully saved watermark state to {path} (checksum: {checksum[:8]})")
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to save state file {path}: {e}")
-            if os.path.exists(temp_path):
-                try:
-                    os.remove(temp_path)
-                except:
-                    pass
-            raise
+            client.insert("meta.pipeline_state_history", rows,
+                          column_names=["source_system", "state_key", "state_value", "updated_at"])
+            client.insert("meta.pipeline_state_latest", rows,
+                          column_names=["source_system", "state_key", "state_value", "updated_at"])
+            logger.info(f"💾 Persisted {len(rows)} state rows for '{src}'")
+        finally:
+            client.close()
+
+
 
 def _get_last_watermark(endpoint_key: str) -> Optional[datetime]:
     """Get last watermark for endpoint - THREAD SAFE."""
@@ -920,38 +1010,38 @@ def _get_incremental_strategy(endpoint_key: str) -> str:
     else:
         return 'full_refresh'
 
-def _should_skip_reference_data_extraction(endpoint_key: str) -> bool:
-    """Check if reference data endpoint should be skipped based on global refresh interval."""
-    endpoint_config = LEAFLINK_ENDPOINTS.get(endpoint_key, {})
+# def _should_skip_reference_data_extraction(endpoint_key: str) -> bool:
+#     """Check if reference data endpoint should be skipped based on global refresh interval."""
+#     endpoint_config = LEAFLINK_ENDPOINTS.get(endpoint_key, {})
     
-    # Only apply to endpoints without any incremental strategy (pure reference data)
-    if _get_incremental_strategy(endpoint_key) != 'full_refresh':
-        return False
+#     # Only apply to endpoints without any incremental strategy (pure reference data)
+#     if _get_incremental_strategy(endpoint_key) != 'full_refresh':
+#         return False
     
-    # Use global refresh interval for all reference data
-    refresh_interval_hours = REFERENCE_DATA_REFRESH_HOURS
+#     # Use global refresh interval for all reference data
+#     refresh_interval_hours = REFERENCE_DATA_REFRESH_HOURS
     
-    # Check when this endpoint was last extracted
-    last_extraction = _get_last_watermark(endpoint_key)
-    if not last_extraction:
-        # Never extracted before, need to extract
-        return False
+#     # Check when this endpoint was last extracted
+#     last_extraction = _get_last_watermark(endpoint_key)
+#     if not last_extraction:
+#         # Never extracted before, need to extract
+#         return False
     
-    # Calculate if enough time has passed
-    now = _utc_now()
-    time_since_last = now - last_extraction
-    refresh_interval = timedelta(hours=refresh_interval_hours)
+#     # Calculate if enough time has passed
+#     now = _utc_now()
+#     time_since_last = now - last_extraction
+#     refresh_interval = timedelta(hours=refresh_interval_hours)
     
-    should_skip = time_since_last < refresh_interval
+#     should_skip = time_since_last < refresh_interval
     
-    if should_skip:
-        remaining_time = refresh_interval - time_since_last
-        hours_remaining = remaining_time.total_seconds() / 3600
-        logger.info(f"⏭️ Skipping {endpoint_key} - last extracted {time_since_last} ago, refresh interval is {refresh_interval_hours}h (next refresh in {hours_remaining:.1f}h)")
-        return True
-    else:
-        logger.info(f"🔄 {endpoint_key} ready for refresh - last extracted {time_since_last} ago, refresh interval is {refresh_interval_hours}h")
-        return False
+#     if should_skip:
+#         remaining_time = refresh_interval - time_since_last
+#         hours_remaining = remaining_time.total_seconds() / 3600
+#         logger.info(f"⏭️ Skipping {endpoint_key} - last extracted {time_since_last} ago, refresh interval is {refresh_interval_hours}h (next refresh in {hours_remaining:.1f}h)")
+#         return True
+#     else:
+#         logger.info(f"🔄 {endpoint_key} ready for refresh - last extracted {time_since_last} ago, refresh interval is {refresh_interval_hours}h")
+#         return False
 
 def _get_incremental_date_range(endpoint_key: str):
     """Get date range for incremental extraction with proper timezone handling and start_date support."""
@@ -1268,8 +1358,8 @@ def extract_leaflink_endpoint(endpoint_key, company_id, raw_schema, **context):
         logger.info(f"⏭️ {endpoint_key} disabled")
         return 0
 
-    if _should_skip_reference_data_extraction(endpoint_key):
-        return 0
+    # if _should_skip_reference_data_extraction(endpoint_key):
+    #     return 0
 
     endpoint_cfg = LEAFLINK_ENDPOINTS[endpoint_key]
     strategy = _get_incremental_strategy(endpoint_key)
@@ -1386,20 +1476,20 @@ def get_endpoint_execution_order():
 
 # ---------------- DAG INTEGRATION FUNCTIONS ---------------- #
 def finalize_state_after_warehouse_load(context):
-    """Finalize state updates after successful warehouse loading."""
+    """
+    Simple end-of-DAG sanity check for ClickHouse-backed state.
+    """
     try:
-        logger.info("✅ All state updates finalized after successful warehouse loads")
-        
-        try:
-            with open(_state_path(), 'r') as f:
-                state_content = f.read()
-                json.loads(state_content)
-            logger.info("✅ State file integrity verified")
-        except Exception as e:
-            logger.error(f"❌ State file integrity check failed: {e}")
-        
+        _ensure_state_dir()
+        client = _get_state_client()
+        total = client.query(
+            "SELECT count() FROM meta.pipeline_state_latest"
+        ).result_rows[0][0]
+        client.close()
+        logger.info(f"✅ State table integrity verified – {total} keys stored")
     except Exception as e:
-        logger.error(f"❌ Failed to finalize state updates: {e}")
+        logger.error(f"❌ State integrity check failed: {e}")
+
 
 def extract_all_endpoints_with_dependencies(company_id, raw_schema, **context):
     """
