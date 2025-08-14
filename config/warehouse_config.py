@@ -107,13 +107,47 @@ def get_required_packages(warehouse_type=None):
     if warehouse_type is None:
         warehouse_type = get_active_warehouse()
     
-    packages = {
+    # Try to read from requirements.txt first
+    requirements_file = Path(__file__).parent.parent / 'requirements.txt'
+    if requirements_file.exists():
+        with open(requirements_file, 'r') as f:
+            packages = [line.strip() for line in f if line.strip() and not line.startswith('#')]
+        return packages
+    
+    # Fallback to warehouse-specific packages if no requirements.txt
+    base_packages = [
+        'selenium==4.35.0',
+        'webdriver-manager==4.0.2',
+        'requests==2.32.4',
+        'pandas==2.3.1',
+        'python-dotenv==1.1.1',
+        'gspread==6.2.1',
+        'google-auth==2.40.3',
+        'google-auth-oauthlib==1.2.2'
+    ]
+    
+    warehouse_packages = {
         'postgres': ['dbt-postgres', 'psycopg2-binary', 'sqlalchemy'],
         'snowflake': ['dbt-snowflake', 'snowflake-connector-python', 'sqlalchemy'],
         'clickhouse': ['dbt-clickhouse', 'clickhouse-connect', 'sqlalchemy']
     }
     
-    return packages.get(warehouse_type, ['dbt-core'])
+    specific_packages = warehouse_packages.get(warehouse_type, ['dbt-core'])
+    return base_packages + specific_packages
+
+# def get_required_packages(warehouse_type=None):
+#     """Get required Python packages for warehouse"""
+    
+#     if warehouse_type is None:
+#         warehouse_type = get_active_warehouse()
+    
+#     packages = {
+#         'postgres': ['dbt-postgres', 'psycopg2-binary', 'sqlalchemy'],
+#         'snowflake': ['dbt-snowflake', 'snowflake-connector-python', 'sqlalchemy'],
+#         'clickhouse': ['dbt-clickhouse', 'clickhouse-connect', 'sqlalchemy']
+#     }
+    
+#     return packages.get(warehouse_type, ['dbt-core'])
 
 # import yaml
 # import os

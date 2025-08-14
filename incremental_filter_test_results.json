@@ -1,0 +1,602 @@
+{
+  "working_endpoints": [
+    {
+      "name": "Activity",
+      "records": 5,
+      "has_data": true
+    },
+    {
+      "name": "Appointment",
+      "records": 5,
+      "has_data": true
+    },
+    {
+      "name": "AttributeDefinition",
+      "records": 5,
+      "has_data": true
+    },
+    {
+      "name": "Bill",
+      "records": 5,
+      "has_data": true
+    },
+    {
+      "name": "BusinessAccount",
+      "records": 5,
+      "has_data": true
+    },
+    {
+      "name": "Case",
+      "records": 5,
+      "has_data": true
+    },
+    {
+      "name": "Contact",
+      "records": 5,
+      "has_data": true
+    },
+    {
+      "name": "Customer",
+      "records": 5,
+      "has_data": true
+    },
+    {
+      "name": "CustomerLocation",
+      "records": 5,
+      "has_data": true
+    },
+    {
+      "name": "Discount",
+      "records": 5,
+      "has_data": true
+    },
+    {
+      "name": "DiscountCode",
+      "records": 5,
+      "has_data": true
+    },
+    {
+      "name": "Email",
+      "records": 5,
+      "has_data": true
+    },
+    {
+      "name": "Employee",
+      "records": 5,
+      "has_data": true
+    },
+    {
+      "name": "Event",
+      "records": 5,
+      "has_data": true
+    },
+    {
+      "name": "ExpenseClaim",
+      "records": 0,
+      "has_data": false
+    },
+    {
+      "name": "ExpenseReceipt",
+      "records": 0,
+      "has_data": false
+    },
+    {
+      "name": "InventoryAdjustment",
+      "records": 5,
+      "has_data": true
+    },
+    {
+      "name": "InventoryIssue",
+      "records": 5,
+      "has_data": true
+    },
+    {
+      "name": "InventoryReceipt",
+      "records": 5,
+      "has_data": true
+    },
+    {
+      "name": "Invoice",
+      "records": 5,
+      "has_data": true
+    },
+    {
+      "name": "ItemClass",
+      "records": 5,
+      "has_data": true
+    },
+    {
+      "name": "ItemWarehouse",
+      "records": 5,
+      "has_data": true
+    },
+    {
+      "name": "KitAssembly",
+      "records": 5,
+      "has_data": true
+    },
+    {
+      "name": "KitSpecification",
+      "records": 5,
+      "has_data": true
+    },
+    {
+      "name": "Lead",
+      "records": 0,
+      "has_data": false
+    },
+    {
+      "name": "NonStockItem",
+      "records": 5,
+      "has_data": true
+    },
+    {
+      "name": "Opportunity",
+      "records": 1,
+      "has_data": true
+    },
+    {
+      "name": "PhysicalInventoryReview",
+      "records": 4,
+      "has_data": true
+    },
+    {
+      "name": "PurchaseOrder",
+      "records": 5,
+      "has_data": true
+    },
+    {
+      "name": "PurchaseReceipt",
+      "records": 5,
+      "has_data": true
+    },
+    {
+      "name": "SalesInvoice",
+      "records": 5,
+      "has_data": true
+    },
+    {
+      "name": "SalesOrder",
+      "records": 5,
+      "has_data": true
+    },
+    {
+      "name": "Salesperson",
+      "records": 5,
+      "has_data": true
+    },
+    {
+      "name": "SalesPriceWorksheet",
+      "records": 5,
+      "has_data": true
+    },
+    {
+      "name": "ServiceOrder",
+      "records": 5,
+      "has_data": true
+    },
+    {
+      "name": "Shipment",
+      "records": 5,
+      "has_data": true
+    },
+    {
+      "name": "StockItem",
+      "records": 5,
+      "has_data": true
+    },
+    {
+      "name": "Task",
+      "records": 5,
+      "has_data": true
+    },
+    {
+      "name": "TransferOrder",
+      "records": 5,
+      "has_data": true
+    },
+    {
+      "name": "Vendor",
+      "records": 5,
+      "has_data": true
+    },
+    {
+      "name": "VendorPriceWorksheet",
+      "records": 0,
+      "has_data": false
+    },
+    {
+      "name": "Warehouse",
+      "records": 5,
+      "has_data": true
+    }
+  ],
+  "unauthorized_endpoints": [],
+  "error_endpoints": [
+    {
+      "name": "Account",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "AccountDetailsForPeriodInquiry",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "AccountGroup",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "AccountSummaryInquiry",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "BigCommerceStores",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "Budget",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "Carrier",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "CashSale",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "ChangeOrder",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "ChangeOrderClass",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "Check",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "CompaniesStructure",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "CompanyFinancialPeriod",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "ContractUsage",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "CostCode",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "Currency",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "CustomerClass",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "CustomerPaymentMethod",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "CustomerPriceClass",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "DeductionBenefitCode",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "EarningTypeCode",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "EmailProcessing",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "EmployeePayrollClass",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "EmployeePayrollSettings",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "ExternalCommitment",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "FinancialPeriod",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "FinancialYear",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "FOBPoint",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "InventoryAllocationInquiry",
+      "status": 500,
+      "error": "Internal Server Error"
+    },
+    {
+      "name": "InventoryQuantityAvailable",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "InventorySummaryInquiry",
+      "status": 500,
+      "error": "Internal Server Error"
+    },
+    {
+      "name": "ItemSalesCategory",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "JournalTransaction",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "LaborCostRate",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "Ledger",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "LotSerialClass",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "PayGroup",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "Payment",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "PaymentMethod",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "PayPeriod",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "PayrollBatch",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "PayrollUnionLocal",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "PayrollWCCCode",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "PhysicalInventoryCount",
+      "status": 500,
+      "error": "Internal Server Error"
+    },
+    {
+      "name": "ProFormaInvoice",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "Project",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "ProjectBudget",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "ProjectTask",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "ProjectTemplate",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "ProjectTemplateTask",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "ProjectTransaction",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "PTOBank",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "SalesPricesInquiry",
+      "status": 500,
+      "error": "Internal Server Error"
+    },
+    {
+      "name": "ShippingBox",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "ShippingTerm",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "ShippingZones",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "ShipVia",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "ShopifyStore",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "StorageDetailsByLocationInquiry",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "StorageDetailsInquiry",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "Subaccount",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "Subcontract",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "Tax",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "TaxCategory",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "TaxReportingSettings",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "TaxZone",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "TemplateItems",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "TimeEntry",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "UnionLocal",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "UnitsOfMeasure",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "VendorClass",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "VendorPricesInquiry",
+      "status": 500,
+      "error": "Internal Server Error"
+    },
+    {
+      "name": "WorkCalendar",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "WorkClassCompensationCode",
+      "status": 403,
+      "error": "HTTP 403"
+    },
+    {
+      "name": "WorkLocation",
+      "status": 403,
+      "error": "HTTP 403"
+    }
+  ],
+  "exception_endpoints": [],
+  "summary": {
+    "total_endpoints": 117,
+    "working_count": 42,
+    "working_with_data_count": 38,
+    "unauthorized_count": 0,
+    "error_count": 75,
+    "exception_count": 0,
+    "working_percentage": 35.9
+  }
+}

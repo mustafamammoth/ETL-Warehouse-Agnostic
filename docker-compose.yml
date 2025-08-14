@@ -83,6 +83,9 @@ services:
       - CLICKHOUSE_DATABASE=${CLICKHOUSE_DATABASE}
       - CLICKHOUSE_USER=${CLICKHOUSE_USER}
       - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
+      - CHROME_BIN=${CHROME_BIN}
+      - CHROMEDRIVER_PATH=${CHROMEDRIVER_PATH}
+      - DISPLAY=${DISPLAY}
     volumes: &airflow_common_volumes
       - ./airflow/dags:/opt/airflow/dags
       - ./airflow/logs:/opt/airflow/logs
@@ -96,15 +99,54 @@ services:
       - ./extractors:/opt/airflow/extractors
       - ./macros:/opt/airflow/macros
       - ./google-sheets-api.json:/opt/airflow/credentials/google-sheets-api.json:ro
-    user: "${AIRFLOW_UID:-50000}:0"
+      - ./tmp/dcc_downloads:/tmp/dcc_downloads
+    user: "0:0"
     entrypoint: /bin/bash
-    command: |
-      -c "
-      pip install dbt-clickhouse clickhouse-connect sqlalchemy
-      python /opt/airflow/scripts/generate_dbt_profiles.py
-      airflow db migrate
-      airflow users create --role Admin --username admin --email admin --firstname admin --lastname admin --password admin
-      "
+    command:
+      - -c
+      - |-
+          (
+                  set -e
+          
+                  # Ensure apt lists path exists (avoids edge errors)
+                  mkdir -p /var/lib/apt/lists/partial
+                  chmod 755 /var/lib/apt/lists /var/lib/apt/lists/partial || true
+          
+                  apt-get update
+                  # base libs for headless
+                  apt-get install -y gnupg wget unzip xvfb fonts-liberation libnss3 libxss1 libasound2 libgbm1 libgtk-3-0
+          
+                  ARCH=$$(uname -m)
+                  echo "Detected architecture: $$ARCH"
+          
+                  if [ "$$ARCH" = "aarch64" ] || [ "$$ARCH" = "arm64" ]; then
+                      echo "Installing Chromium/Chromedriver for ARM64..."
+                      # Try Debian names first, then Ubuntu alternates
+                      apt-get install -y chromium chromium-driver || apt-get install -y chromium-browser chromium-chromedriver
+                  else
+                      echo "Installing Google Chrome (x86_64) and Chromedriver..."
+                      wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | apt-key add -
+                      echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list
+                      apt-get update
+                      apt-get install -y google-chrome-stable
+                      # Chromedriver from distro; version mismatch is usually OK for automation
+                      apt-get install -y chromium-driver || true
+                  fi
+          
+                  # Show versions for debugging
+                  (chromium --version || chromium-browser --version || google-chrome --version || true) 2>/dev/null || true
+                  (chromedriver --version || chromium-chromedriver --version || true) 2>/dev/null || true
+          
+                  # Clean apt caches; DO NOT remove the mounted /tmp/dcc_downloads volume
+                  apt-get clean || true
+                  rm -rf /var/lib/apt/lists/* /var/tmp/* || true
+                  # Prune /tmp but keep the downloads mount; ignore errors
+                  find /tmp -mindepth 1 -maxdepth 1 -not -path '/tmp/dcc_downloads' -exec rm -rf {} + || true
+          
+                  # (Re)create downloads dir after cleanup
+                  mkdir -p /tmp/dcc_downloads
+                  chmod 777 /tmp/dcc_downloads
+               ) &&             Xvfb :99 -screen 0 1920x1080x24 &             gosu airflow bash -lc "pip install agate==1.9.1 annotated-types==0.7.0 attrs==25.3.0 babel==2.17.0 cachetools==5.5.2 certifi==2025.7.14 charset-normalizer==3.4.2 click==8.2.1 clickhouse-connect==0.8.18 clickhouse-driver==0.2.9 colorama==0.4.6 croniter==6.0.0 daff==1.4.2 dbt-adapters==1.16.3 dbt-clickhouse==1.9.2 dbt-common==1.27.1 dbt-core==1.10.5 dbt-extractor==0.6.0 dbt-protos==1.0.348 dbt-semantic-interfaces==0.9.0 deepdiff==7.0.1 google-auth==2.40.3 google-auth-oauthlib==1.2.2 gspread==6.2.1 h11==0.16.0 idna==3.10 importlib_metadata==8.7.0 isodate==0.6.1 Jinja2==3.1.6 jsonschema==4.25.0 jsonschema-specifications==2025.4.1 leather==0.4.0 lz4==4.4.4 MarkupSafe==3.0.2 mashumaro==3.14 more-itertools==10.7.0 msgpack==1.1.1 networkx==3.5 numpy==2.3.2 oauthlib==3.3.1 ordered-set==4.1.0 outcome==1.3.0.post0 packaging==25.0 pandas==2.3.1 parsedatetime==2.6 pathspec==0.12.1 protobuf==5.29.5 pyasn1==0.6.1 pyasn1_modules==0.4.2 pydantic==2.11.7 pydantic_core==2.33.2 PySocks==1.7.1 python-dateutil==2.9.0.post0 python-dotenv==1.1.1 python-slugify==8.0.4 pytimeparse==1.1.8 pytz==2025.2 PyYAML==6.0.2 referencing==0.36.2 requests==2.32.4 requests-oauthlib==2.0.0 rpds-py==0.26.0 rsa==4.9.1 selenium==4.35.0 six==1.17.0 sniffio==1.3.1 snowplow-tracker==1.1.0 sortedcontainers==2.4.0 sqlparse==0.5.3 text-unidecode==1.3 trio==0.30.0 trio-websocket==0.12.2 typing-inspection==0.4.1 typing_extensions==4.14.1 tzdata==2025.2 tzlocal==5.3.1 urllib3==2.5.0 webdriver-manager==4.0.2 websocket-client==1.8.0 wsproto==1.2.0 zipp==3.23.0 zstandard==0.23.0 &&             python /opt/airflow/scripts/generate_dbt_profiles.py &&             airflow db migrate &&             airflow users create --role Admin --username admin --email admin --firstname admin --lastname admin --password admin"
 
   airflow-webserver:
     image: apache/airflow:2.7.3-python3.11
@@ -115,13 +157,53 @@ services:
     volumes: *airflow_common_volumes
     ports:
       - "8080:8080"
-    user: "${AIRFLOW_UID:-50000}:0"
+    user: "0:0"
     entrypoint: /bin/bash
-    command: |
-      -c "
-      pip install dbt-clickhouse clickhouse-connect sqlalchemy
-      airflow webserver
-      "
+    command:
+      - -c
+      - |-
+          (
+                  set -e
+          
+                  # Ensure apt lists path exists (avoids edge errors)
+                  mkdir -p /var/lib/apt/lists/partial
+                  chmod 755 /var/lib/apt/lists /var/lib/apt/lists/partial || true
+          
+                  apt-get update
+                  # base libs for headless
+                  apt-get install -y gnupg wget unzip xvfb fonts-liberation libnss3 libxss1 libasound2 libgbm1 libgtk-3-0
+          
+                  ARCH=$$(uname -m)
+                  echo "Detected architecture: $$ARCH"
+          
+                  if [ "$$ARCH" = "aarch64" ] || [ "$$ARCH" = "arm64" ]; then
+                      echo "Installing Chromium/Chromedriver for ARM64..."
+                      # Try Debian names first, then Ubuntu alternates
+                      apt-get install -y chromium chromium-driver || apt-get install -y chromium-browser chromium-chromedriver
+                  else
+                      echo "Installing Google Chrome (x86_64) and Chromedriver..."
+                      wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | apt-key add -
+                      echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list
+                      apt-get update
+                      apt-get install -y google-chrome-stable
+                      # Chromedriver from distro; version mismatch is usually OK for automation
+                      apt-get install -y chromium-driver || true
+                  fi
+          
+                  # Show versions for debugging
+                  (chromium --version || chromium-browser --version || google-chrome --version || true) 2>/dev/null || true
+                  (chromedriver --version || chromium-chromedriver --version || true) 2>/dev/null || true
+          
+                  # Clean apt caches; DO NOT remove the mounted /tmp/dcc_downloads volume
+                  apt-get clean || true
+                  rm -rf /var/lib/apt/lists/* /var/tmp/* || true
+                  # Prune /tmp but keep the downloads mount; ignore errors
+                  find /tmp -mindepth 1 -maxdepth 1 -not -path '/tmp/dcc_downloads' -exec rm -rf {} + || true
+          
+                  # (Re)create downloads dir after cleanup
+                  mkdir -p /tmp/dcc_downloads
+                  chmod 777 /tmp/dcc_downloads
+               ) &&             Xvfb :99 -screen 0 1920x1080x24 &             gosu airflow bash -lc "pip install agate==1.9.1 annotated-types==0.7.0 attrs==25.3.0 babel==2.17.0 cachetools==5.5.2 certifi==2025.7.14 charset-normalizer==3.4.2 click==8.2.1 clickhouse-connect==0.8.18 clickhouse-driver==0.2.9 colorama==0.4.6 croniter==6.0.0 daff==1.4.2 dbt-adapters==1.16.3 dbt-clickhouse==1.9.2 dbt-common==1.27.1 dbt-core==1.10.5 dbt-extractor==0.6.0 dbt-protos==1.0.348 dbt-semantic-interfaces==0.9.0 deepdiff==7.0.1 google-auth==2.40.3 google-auth-oauthlib==1.2.2 gspread==6.2.1 h11==0.16.0 idna==3.10 importlib_metadata==8.7.0 isodate==0.6.1 Jinja2==3.1.6 jsonschema==4.25.0 jsonschema-specifications==2025.4.1 leather==0.4.0 lz4==4.4.4 MarkupSafe==3.0.2 mashumaro==3.14 more-itertools==10.7.0 msgpack==1.1.1 networkx==3.5 numpy==2.3.2 oauthlib==3.3.1 ordered-set==4.1.0 outcome==1.3.0.post0 packaging==25.0 pandas==2.3.1 parsedatetime==2.6 pathspec==0.12.1 protobuf==5.29.5 pyasn1==0.6.1 pyasn1_modules==0.4.2 pydantic==2.11.7 pydantic_core==2.33.2 PySocks==1.7.1 python-dateutil==2.9.0.post0 python-dotenv==1.1.1 python-slugify==8.0.4 pytimeparse==1.1.8 pytz==2025.2 PyYAML==6.0.2 referencing==0.36.2 requests==2.32.4 requests-oauthlib==2.0.0 rpds-py==0.26.0 rsa==4.9.1 selenium==4.35.0 six==1.17.0 sniffio==1.3.1 snowplow-tracker==1.1.0 sortedcontainers==2.4.0 sqlparse==0.5.3 text-unidecode==1.3 trio==0.30.0 trio-websocket==0.12.2 typing-inspection==0.4.1 typing_extensions==4.14.1 tzdata==2025.2 tzlocal==5.3.1 urllib3==2.5.0 webdriver-manager==4.0.2 websocket-client==1.8.0 wsproto==1.2.0 zipp==3.23.0 zstandard==0.23.0 &&             airflow webserver"
 
   airflow-scheduler:
     image: apache/airflow:2.7.3-python3.11
@@ -130,13 +212,53 @@ services:
         condition: service_completed_successfully
     environment: *airflow_common_env
     volumes: *airflow_common_volumes
-    user: "${AIRFLOW_UID:-50000}:0"
+    user: "0:0"
     entrypoint: /bin/bash
-    command: |
-      -c "
-      pip install dbt-clickhouse clickhouse-connect sqlalchemy
-      airflow scheduler
-      "
+    command:
+      - -c
+      - |-
+          (
+                  set -e
+          
+                  # Ensure apt lists path exists (avoids edge errors)
+                  mkdir -p /var/lib/apt/lists/partial
+                  chmod 755 /var/lib/apt/lists /var/lib/apt/lists/partial || true
+          
+                  apt-get update
+                  # base libs for headless
+                  apt-get install -y gnupg wget unzip xvfb fonts-liberation libnss3 libxss1 libasound2 libgbm1 libgtk-3-0
+          
+                  ARCH=$$(uname -m)
+                  echo "Detected architecture: $$ARCH"
+          
+                  if [ "$$ARCH" = "aarch64" ] || [ "$$ARCH" = "arm64" ]; then
+                      echo "Installing Chromium/Chromedriver for ARM64..."
+                      # Try Debian names first, then Ubuntu alternates
+                      apt-get install -y chromium chromium-driver || apt-get install -y chromium-browser chromium-chromedriver
+                  else
+                      echo "Installing Google Chrome (x86_64) and Chromedriver..."
+                      wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | apt-key add -
+                      echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list
+                      apt-get update
+                      apt-get install -y google-chrome-stable
+                      # Chromedriver from distro; version mismatch is usually OK for automation
+                      apt-get install -y chromium-driver || true
+                  fi
+          
+                  # Show versions for debugging
+                  (chromium --version || chromium-browser --version || google-chrome --version || true) 2>/dev/null || true
+                  (chromedriver --version || chromium-chromedriver --version || true) 2>/dev/null || true
+          
+                  # Clean apt caches; DO NOT remove the mounted /tmp/dcc_downloads volume
+                  apt-get clean || true
+                  rm -rf /var/lib/apt/lists/* /var/tmp/* || true
+                  # Prune /tmp but keep the downloads mount; ignore errors
+                  find /tmp -mindepth 1 -maxdepth 1 -not -path '/tmp/dcc_downloads' -exec rm -rf {} + || true
+          
+                  # (Re)create downloads dir after cleanup
+                  mkdir -p /tmp/dcc_downloads
+                  chmod 777 /tmp/dcc_downloads
+               ) &&             Xvfb :99 -screen 0 1920x1080x24 &             gosu airflow bash -lc "pip install agate==1.9.1 annotated-types==0.7.0 attrs==25.3.0 babel==2.17.0 cachetools==5.5.2 certifi==2025.7.14 charset-normalizer==3.4.2 click==8.2.1 clickhouse-connect==0.8.18 clickhouse-driver==0.2.9 colorama==0.4.6 croniter==6.0.0 daff==1.4.2 dbt-adapters==1.16.3 dbt-clickhouse==1.9.2 dbt-common==1.27.1 dbt-core==1.10.5 dbt-extractor==0.6.0 dbt-protos==1.0.348 dbt-semantic-interfaces==0.9.0 deepdiff==7.0.1 google-auth==2.40.3 google-auth-oauthlib==1.2.2 gspread==6.2.1 h11==0.16.0 idna==3.10 importlib_metadata==8.7.0 isodate==0.6.1 Jinja2==3.1.6 jsonschema==4.25.0 jsonschema-specifications==2025.4.1 leather==0.4.0 lz4==4.4.4 MarkupSafe==3.0.2 mashumaro==3.14 more-itertools==10.7.0 msgpack==1.1.1 networkx==3.5 numpy==2.3.2 oauthlib==3.3.1 ordered-set==4.1.0 outcome==1.3.0.post0 packaging==25.0 pandas==2.3.1 parsedatetime==2.6 pathspec==0.12.1 protobuf==5.29.5 pyasn1==0.6.1 pyasn1_modules==0.4.2 pydantic==2.11.7 pydantic_core==2.33.2 PySocks==1.7.1 python-dateutil==2.9.0.post0 python-dotenv==1.1.1 python-slugify==8.0.4 pytimeparse==1.1.8 pytz==2025.2 PyYAML==6.0.2 referencing==0.36.2 requests==2.32.4 requests-oauthlib==2.0.0 rpds-py==0.26.0 rsa==4.9.1 selenium==4.35.0 six==1.17.0 sniffio==1.3.1 snowplow-tracker==1.1.0 sortedcontainers==2.4.0 sqlparse==0.5.3 text-unidecode==1.3 trio==0.30.0 trio-websocket==0.12.2 typing-inspection==0.4.1 typing_extensions==4.14.1 tzdata==2025.2 tzlocal==5.3.1 urllib3==2.5.0 webdriver-manager==4.0.2 websocket-client==1.8.0 wsproto==1.2.0 zipp==3.23.0 zstandard==0.23.0 &&             airflow scheduler"
 
 volumes:
   postgres_data:

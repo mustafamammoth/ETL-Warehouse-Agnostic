@@ -22,8 +22,8 @@ fi
 # 2. Update ACTIVE_WAREHOUSE in .env file
 echo "📝 Updating .env file..."
 if grep -q "^ACTIVE_WAREHOUSE=" .env; then
-    # Replace existing line
-    sed -i "s/^ACTIVE_WAREHOUSE=.*/ACTIVE_WAREHOUSE=${WAREHOUSE}/" .env
+    # Replace existing line - Fixed for macOS compatibility
+    sed -i '' "s/^ACTIVE_WAREHOUSE=.*/ACTIVE_WAREHOUSE=${WAREHOUSE}/" .env
 else
     # Add new line
     echo "ACTIVE_WAREHOUSE=${WAREHOUSE}" >> .env

@@ -1,15 +1,16 @@
-# acumatica_dag.py - Dynamic, incremental-aware pipeline (FIXED)
+# acumatica_dag.py - Acumatica ERP pipeline with incremental extraction (single schema)
 from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.operators.empty import EmptyOperator
+from airflow.utils.trigger_rule import TriggerRule
 import os
 import subprocess
 import sys
 import yaml
 import re
-from glob import glob
 import logging
+import copy
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -19,9 +20,45 @@ logger = logging.getLogger(__name__)
 sys.path.append('/opt/airflow')
 sys.path.append('/opt/airflow/config')
 
-from extractors.acumatica import extractor as acx
+from extractors.acumatica import extractor as acumatica
 
 ENV_PATTERN = re.compile(r'^\$\{([A-Z0-9_]+)\}$')
+
+# ---- DAG-run type shim (works on 2.3 → 2.9) -----------------------------
+try:
+    from airflow.utils.types import DagRunType          # Airflow ≥2.6 / 2.7
+except ImportError:                                     # older / some 2.8 builds
+    from airflow.models.dagrun import DagRunType
+# -------------------------------------------------------------------------
+
+def run_coordinated_extraction(**context):
+    """
+    Extract all endpoints into single schema without branch filtering.
+    """
+    logical_dt = context['logical_date']
+    dag_run = context['dag_run']
+    
+    cfg = copy.deepcopy(config)
+    cfg['extraction']['source_system'] = "acumatica"
+    cfg['warehouse']['schemas']['raw_schema'] = config['warehouse']['schemas']['raw_schema']
+    cfg['extraction']['incremental']['state_path'] = "/opt/airflow/state/acumatica_watermarks.json"
+    
+    acumatica.init_extractor(cfg)
+    result = acumatica.extract_all_endpoints_with_dependencies(
+        raw_schema=config['warehouse']['schemas']['raw_schema'],
+        **context
+    )
+    
+    total_rows = result['total_records']
+    extraction_results = result['extraction_results']
+
+    # push results to XCom for downstream tasks
+    ti = context['task_instance']
+    ti.xcom_push(key='extraction_results', value=extraction_results)
+    ti.xcom_push(key='total_records', value=total_rows)
+
+    logger.info(f"✅ Extraction complete – {total_rows:,} rows total")
+    return total_rows
 
 def _sub_env(obj):
     """Substitute environment variables in config."""
@@ -35,6 +72,87 @@ def _sub_env(obj):
             return os.getenv(m.group(1), obj)
     return obj
 
+def validate_extraction_integrity(**context):
+    """
+    Validates each successful extraction in the single schema.
+    """
+    import clickhouse_connect
+    logger.info("🔍 Validating Acumatica extraction data integrity...")
+
+    # pull results produced by run_coordinated_extraction
+    extraction_results = context['task_instance'].xcom_pull(
+        task_ids='run_coordinated_extraction', key='extraction_results'
+    ) or {}
+
+    raw_schema = config['warehouse']['schemas']['raw_schema']
+
+    # keep only successful loads
+    successful = {
+        k: v for k, v in extraction_results.items() if isinstance(v, int) and v > 0
+    }
+    if not successful:
+        logger.warning("⚠️ No successful extractions to validate")
+        return {'status': 'no_successful_extractions'}
+
+    logger.info(f"🔍 Validating {len(successful)} successful extractions")
+
+    # ClickHouse connection
+    client = clickhouse_connect.get_client(
+        host=os.getenv('CLICKHOUSE_HOST'),
+        port=int(os.getenv('CLICKHOUSE_PORT', 8443)),
+        username=os.getenv('CLICKHOUSE_USER', 'default'),
+        password=os.getenv('CLICKHOUSE_PASSWORD'),
+        database=os.getenv('CLICKHOUSE_DATABASE', 'default'),
+        secure=True
+    )
+
+    validation = {'endpoint_results': {}, 'critical_issues': [], 'warnings': []}
+
+    for endpoint_key, expected_rows in successful.items():
+        table = f"`{raw_schema}`.`raw_{endpoint_key}`"
+        try:
+            latest_ts = client.query(
+                f"SELECT max(_extracted_at) FROM {table}"
+            ).result_rows[0][0]
+            actual_rows = client.query(
+                f"SELECT count() FROM {table} WHERE _extracted_at = '{latest_ts}'"
+            ).result_rows[0][0]
+
+            status = "PASS" if actual_rows == expected_rows else "COUNT_MISMATCH"
+            if status != "PASS":
+                validation['critical_issues'].append(
+                    f"{endpoint_key}: expected {expected_rows}, got {actual_rows}"
+                )
+
+            validation['endpoint_results'][endpoint_key] = {
+                'expected': expected_rows,
+                'actual': actual_rows,
+                'status': status,
+                'latest_extraction': latest_ts
+            }
+            logger.info(f"📊 {endpoint_key}: {status}")
+
+        except Exception as e:
+            logger.error(f"❌ Validation failed for {endpoint_key}: {e}")
+            validation['critical_issues'].append(f"{endpoint_key}: {e}")
+            validation['endpoint_results'][endpoint_key] = {
+                'status': 'ERROR', 'error': str(e)
+            }
+
+    client.close()
+
+    validation['overall_status'] = (
+        'PASS' if not validation['critical_issues'] else 'FAIL'
+    )
+
+    if validation['overall_status'] == 'FAIL':
+        raise ValueError(
+            f"Data validation failed – {len(validation['critical_issues'])} critical issues"
+        )
+
+    context['task_instance'].xcom_push(key='validation_results', value=validation)
+    return validation
+
 def load_acumatica_config():
     """Load and validate Acumatica configuration."""
     config_path = '/opt/airflow/config/sources/acumatica.yml'
@@ -43,13 +161,27 @@ def load_acumatica_config():
             raw = yaml.safe_load(f)
         config = _sub_env(raw)
         
-        # Validate essential configuration
+        # Enhanced validation
         required_keys = ['dag', 'api', 'extraction', 'warehouse']
         for key in required_keys:
             if key not in config:
                 raise ValueError(f"Missing required config section: {key}")
         
-        logger.info(f"✅ Configuration loaded from {config_path}")
+        # Validate critical nested keys
+        if 'incremental' not in config['extraction']:
+            raise ValueError("Missing extraction.incremental configuration")
+        
+        if 'state_path' not in config['extraction']['incremental']:
+            raise ValueError("Missing extraction.incremental.state_path")
+        
+        # Ensure state directory exists
+        state_path = config['extraction']['incremental']['state_path']
+        state_dir = os.path.dirname(state_path)
+        if state_dir:
+            os.makedirs(state_dir, exist_ok=True)
+            logger.info(f"✅ State directory ensured: {state_dir}")
+        
+        logger.info(f"✅ Configuration loaded and validated from {config_path}")
         return config
     except FileNotFoundError:
         logger.error(f"❌ Configuration file not found: {config_path}")
@@ -68,34 +200,34 @@ def get_schedule_interval(config):
     if stype == 'hourly': 
         return "0 * * * *"
     if stype == 'daily':
-        t = schedule_config.get('time', "01:00")
+        t = schedule_config.get('time', "06:00")
         h, m = t.split(':')
         return f"{m} {h} * * *"
     if stype == 'weekly':
-        t = schedule_config.get('time', "01:00")
+        t = schedule_config.get('time', "06:00")
         h, m = t.split(':')
         days = {'monday': 1, 'tuesday': 2, 'wednesday': 3, 'thursday': 4, 
                 'friday': 5, 'saturday': 6, 'sunday': 0}
         dnum = days.get(schedule_config.get('day_of_week', 'monday').lower(), 1)
         return f"{m} {h} * * {dnum}"
     if stype == 'monthly':
-        t = schedule_config.get('time', "01:00")
+        t = schedule_config.get('time', "06:00")
         h, m = t.split(':')
         day = schedule_config.get('day_of_month', 1)
         return f"{m} {h} {day} * *"
     if stype == 'cron':
-        return schedule_config.get('cron_expression', '0 1 * * *')
+        return schedule_config.get('cron_expression', '0 6 * * *')
     
-    return '0 1 * * *'  # Default daily at 1 AM
+    return '0 6 * * *'  # Default daily at 6 AM
 
 # Load configuration and initialize extractor
 config = load_acumatica_config()
-enabled_endpoints = acx.init_extractor(config)
+enabled_endpoints = acumatica.init_extractor(config)
 logger.info(f"✅ Enabled endpoints: {list(enabled_endpoints.keys())}")
 
-# ---------------- EMAIL CALLBACKS ---------------- #
+# ---------------- EMAIL CALLBACKS (Enhanced) ---------------- #
 def send_success_email(context):
-    """Send success notification email."""
+    """Send enhanced extraction success notification email."""
     try:
         from airflow.utils.email import send_email
         recipients = config['notifications']['email'].get('success_recipients', [])
@@ -103,22 +235,72 @@ def send_success_email(context):
             return
             
         dag_run = context['dag_run']
-        subject = f"✅ SUCCESS: {dag_run.dag_id}"
+        
+        # Get validation results
+        validation_results = context['task_instance'].xcom_pull(
+            task_ids='validate_extraction_integrity', 
+            key='validation_results'
+        )
+        
+        # Get extraction results for detailed summary
+        extraction_results = context['task_instance'].xcom_pull(
+            task_ids='run_coordinated_extraction', 
+            key='extraction_results'
+        ) or {}
+        
+        total_records = context['task_instance'].xcom_pull(
+            task_ids='run_coordinated_extraction', 
+            key='total_records'
+        ) or 0
+        
+        subject = f"✅ EXTRACTION SUCCESS: {dag_run.dag_id} - {total_records:,} records"
+        
         html = f"""
-        <h3>Acumatica Pipeline Success</h3>
+        <h3>✅ Acumatica Extraction Pipeline Success</h3>
         <p><strong>DAG:</strong> {dag_run.dag_id}</p>
         <p><strong>Run ID:</strong> {dag_run.run_id}</p>
         <p><strong>Execution Date:</strong> {dag_run.execution_date}</p>
-        <p><strong>Start Date:</strong> {dag_run.start_date}</p>
+        <p><strong>Total Records Extracted:</strong> {total_records:,}</p>
+        
+        <h4>📊 Extraction Summary by Endpoint</h4>
+        <table border="1" style="border-collapse: collapse;">
+        <tr><th>Endpoint</th><th>Records</th><th>Status</th></tr>
         """
         
+        for endpoint, result in extraction_results.items():
+            if isinstance(result, int):
+                status = "✅ Success"
+                records = f"{result:,}"
+            else:
+                status = "❌ Failed" if "Failed" in str(result) else "⚠️ Warning"
+                records = str(result)
+            html += f"<tr><td>{endpoint}</td><td>{records}</td><td>{status}</td></tr>"
+        
+        html += "</table>"
+        
+        if validation_results:
+            html += f"""
+            <h4>🔍 Data Validation Summary</h4>
+            <p><strong>Overall Status:</strong> {validation_results.get('overall_status', 'Unknown')}</p>
+            <p><strong>Endpoints Validated:</strong> {validation_results.get('total_endpoints_validated', 0)}</p>
+            """
+            
+            if validation_results.get('warnings'):
+                html += f"<p><strong>Warnings:</strong> {len(validation_results['warnings'])}</p>"
+                html += "<ul>"
+                for warning in validation_results['warnings'][:3]:  # Show first 3
+                    html += f"<li>{warning}</li>"
+                html += "</ul>"
+        
+        html += "<p><em>💡 Silver transformations will be handled by the unified silver DAG</em></p>"
+        
         send_email(to=recipients, subject=subject, html_content=html)
-        logger.info(f"✅ Success email sent to {recipients}")
+        logger.info(f"✅ Extraction success email sent to {recipients}")
     except Exception as e:
         logger.error(f"❌ Failed to send success email: {e}")
 
 def send_failure_email(context):
-    """Send failure notification email."""
+    """Send enhanced failure notification email."""
     try:
         from airflow.utils.email import send_email
         recipients = config['notifications']['email'].get('failure_recipients', [])
@@ -127,9 +309,21 @@ def send_failure_email(context):
             
         ti = context['task_instance']
         ex = context.get('exception', 'Unknown error')
+        
+        # Get validation results if available
+        validation_results = None
+        try:
+            validation_results = context['task_instance'].xcom_pull(
+                task_ids='validate_extraction_integrity', 
+                key='validation_results'
+            )
+        except:
+            pass
+        
         subject = f"❌ FAILURE: {ti.dag_id}.{ti.task_id}"
+        
         html = f"""
-        <h3>Acumatica Pipeline Failure</h3>
+        <h3>❌ Acumatica Pipeline Failure</h3>
         <p><strong>DAG:</strong> {ti.dag_id}</p>
         <p><strong>Task:</strong> {ti.task_id}</p>
         <p><strong>Execution Date:</strong> {ti.execution_date}</p>
@@ -137,12 +331,21 @@ def send_failure_email(context):
         <pre>{ex}</pre>
         """
         
+        if validation_results and validation_results.get('critical_issues'):
+            html += f"""
+            <h4>🚨 Critical Data Issues Detected</h4>
+            <ul>
+            """
+            for issue in validation_results['critical_issues']:
+                html += f"<li>{issue}</li>"
+            html += "</ul>"
+        
         send_email(to=recipients, subject=subject, html_content=html)
         logger.info(f"✅ Failure email sent to {recipients}")
     except Exception as e:
         logger.error(f"❌ Failed to send failure email: {e}")
 
-# DAG default arguments
+# DAG default arguments (Enhanced)
 default_args = {
     'owner': config['dag']['owner'],
     'depends_on_past': False,
@@ -153,6 +356,7 @@ default_args = {
     'retry_delay': timedelta(minutes=config['dag']['retry_delay_minutes']),
     'email': config['notifications']['email']['failure_recipients'],
     'on_failure_callback': send_failure_email,
+    'max_active_tis_per_dag': 10,
 }
 
 # Create DAG
@@ -163,425 +367,332 @@ dag = DAG(
     schedule_interval=get_schedule_interval(config),
     max_active_runs=config['dag']['max_active_runs'],
     tags=config['dag']['tags'],
-    catchup=False  # Important for incremental workflows
+    catchup=False,
+    max_active_tasks=5
 )
 
 # ---------------- CONNECTION TEST ---------------- #
 def test_connection(**context):
-    """Test Acumatica connection."""
+    """Test Acumatica connection and validate prerequisites."""
     try:
-        session = acx.create_authenticated_session()
-        logger.info("✅ Connection test successful")
+        # Check required environment variables
+        username = os.getenv('ACUMATICA_USERNAME')
+        password = os.getenv('ACUMATICA_PASSWORD')
+        
+        if not username:
+            raise ValueError("Missing required environment variable: ACUMATICA_USERNAME")
+        
+        if not password:
+            raise ValueError("Missing required environment variable: ACUMATICA_PASSWORD")
+        
+        logger.info(f"✅ Username configured: {username}")
+        
+        # Test Acumatica API connection
+        session = acumatica.create_authenticated_session()
+        logger.info("✅ Acumatica API connection successful")
+        
+        # Test ClickHouse connection
+        import clickhouse_connect
+        
+        host = os.getenv('CLICKHOUSE_HOST')
+        port = int(os.getenv('CLICKHOUSE_PORT', 8443))
+        database = os.getenv('CLICKHOUSE_DATABASE', 'default')
+        username_ch = os.getenv('CLICKHOUSE_USER', 'default')
+        password_ch = os.getenv('CLICKHOUSE_PASSWORD')
+        
+        if not all([host, password_ch]):
+            raise ValueError("ClickHouse connection parameters missing")
+        
+        client = clickhouse_connect.get_client(
+            host=host, port=port, username=username_ch, password=password_ch,
+            database=database, secure=True
+        )
+        
+        # Test basic query
+        result = client.query("SELECT 1 as test")
+        if result.result_rows[0][0] == 1:
+            logger.info("✅ ClickHouse connection successful")
+        else:
+            raise ValueError("ClickHouse test query failed")
+        
+        client.close()
+        
+        # Test state file access
+        state_path = config['extraction']['incremental']['state_path']
+        state_dir = os.path.dirname(state_path)
+        
+        if not os.access(state_dir, os.W_OK):
+            raise ValueError(f"State directory not writable: {state_dir}")
+        
+        logger.info(f"✅ State directory writable: {state_dir}")
+        
         return True
+        
     except Exception as e:
         logger.error(f"❌ Connection test failed: {e}")
         raise
 
-# ---------------- WAREHOUSE LOADING (ClickHouse specific) ---------------- #
-def load_csv_to_warehouse(**context):
-    """Load CSV files to ClickHouse warehouse."""
-    logger.info("📊 Loading CSV files to ClickHouse warehouse...")
-    
-    wh = os.getenv('ACTIVE_WAREHOUSE', config['warehouse']['active_warehouse'])
-    if wh != 'clickhouse':
-        raise ValueError(f"Only ClickHouse warehouse is supported, got: {wh}")
-    
-    return load_to_clickhouse_warehouse()
-
-def load_to_clickhouse_warehouse():
-    """Load data to ClickHouse with improved error handling."""
-    import pandas as pd
-    import clickhouse_connect
-    
-    # Configuration
-    bronze_schema = config['warehouse']['schemas']['bronze_schema']
-    csv_dir = config['extraction']['paths']['raw_data_directory']
-    
-    logger.info(f"📊 Loading CSV files to ClickHouse schema: {bronze_schema}")
-    
-    # Connection parameters
-    host = os.getenv('CLICKHOUSE_HOST')
-    port = int(os.getenv('CLICKHOUSE_PORT', 8443))
-    database = os.getenv('CLICKHOUSE_DATABASE', 'default')
-    username = os.getenv('CLICKHOUSE_USER', 'default')
-    password = os.getenv('CLICKHOUSE_PASSWORD')
-    
-    if not all([host, password]):
-        raise ValueError("ClickHouse connection parameters missing")
-    
-    # Connect to ClickHouse
+# ---------------- STATE MANAGEMENT ---------------- #
+def finalize_extraction_state(**context):
+    """Finalize state after successful extraction and validation."""
     try:
-        client = clickhouse_connect.get_client(
-            host=host, port=port, username=username, password=password,
-            database=database, secure=True
+        # Get extraction results from previous task
+        extraction_results = context['task_instance'].xcom_pull(
+            task_ids='run_coordinated_extraction', 
+            key='extraction_results'
         )
-        logger.info("✅ Connected to ClickHouse")
+        
+        # Get validation results
+        validation_results = context['task_instance'].xcom_pull(
+            task_ids='validate_extraction_integrity', 
+            key='validation_results'
+        )
+        
+        if validation_results and validation_results.get('overall_status') != 'PASS':
+            logger.error("❌ Cannot finalize state - validation failed")
+            raise ValueError("Validation failed - state not finalized")
+        
+        if extraction_results:
+            successful_extractions = [
+                endpoint for endpoint, result in extraction_results.items() 
+                if isinstance(result, int) and result > 0
+            ]
+            logger.info(f"✅ Finalizing state for {len(successful_extractions)} successful extractions")
+        
+        # Call extractor finalization
+        acumatica.finalize_state_after_warehouse_load(context)
+        
+        logger.info("✅ Extraction state finalized successfully")
+        return "State finalized successfully"
+        
     except Exception as e:
-        logger.error(f"❌ Failed to connect to ClickHouse: {e}")
+        logger.error(f"❌ Failed to finalize extraction state: {e}")
         raise
-    
-    # Create schema if needed
-    if bronze_schema != 'default':
-        try:
-            client.command(f"CREATE DATABASE IF NOT EXISTS {bronze_schema}")
-            logger.info(f"✅ Ensured schema exists: {bronze_schema}")
-        except Exception as e:
-            logger.error(f"❌ Failed to create schema: {e}")
-            raise
-    
-    # Process CSV files
-    csv_files = glob(os.path.join(csv_dir, '*.csv'))
-    if not csv_files:
-        logger.warning(f"⚠️ No CSV files found in {csv_dir}")
-        return 0
-    
-    total_records = 0
-    
-    for csv_path in csv_files:
-        endpoint_key = os.path.splitext(os.path.basename(csv_path))[0]
-        table_name = f"raw_{endpoint_key}"
-        full_table = f"{bronze_schema}.{table_name}"
-        
-        try:
-            # Load CSV
-            df = pd.read_csv(csv_path)
-            if df.empty:
-                logger.warning(f"⚠️ Empty CSV file: {csv_path}")
-                continue
-            
-            logger.info(f"📄 Processing {len(df)} records from {csv_path}")
-            
-            # Determine primary key and version columns
-            pk_candidates = [c for c in df.columns if c.lower() in ('id', 'guid', 'bill_guid', 'reference_number', 'referencenbr')]
-            pk_col = pk_candidates[0] if pk_candidates else None
-            
-            version_candidates = [c for c in df.columns if 'last_modified' in c.lower() or c == '_extracted_at']
-            version_col = version_candidates[0] if version_candidates else None
-            
-            # Clean column names for ClickHouse
-            def safe_column_name(name):
-                return name.replace(' ', '_').replace('-', '_').replace('.', '_').replace('(', '').replace(')', '')
-            
-            df.columns = [safe_column_name(col) for col in df.columns]
-            if pk_col:
-                pk_col = safe_column_name(pk_col)
-            if version_col:
-                version_col = safe_column_name(version_col)
-            
-            # Check if table exists
-            table_exists = False
-            try:
-                client.query(f"DESCRIBE TABLE {full_table}")
-                table_exists = True
-                logger.info(f"📋 Table {full_table} already exists")
-            except Exception:
-                table_exists = False
-            
-            # Create table if it doesn't exist
-            if not table_exists:
-                columns = []
-                for col in df.columns:
-                    columns.append(f"`{col}` String")
-                
-                # Determine table engine
-                order_by = f"`{pk_col}`" if pk_col else "tuple()"
-                if version_col:
-                    engine = f"ReplacingMergeTree(`{version_col}`)"
-                else:
-                    engine = "MergeTree()"
-                
-                create_ddl = f"""
-                CREATE TABLE {full_table} (
-                    {', '.join(columns)}
-                ) ENGINE = {engine}
-                ORDER BY {order_by}
-                """
-                
-                client.command(create_ddl)
-                logger.info(f"🆕 Created table {full_table} with engine {engine}")
-            
-            # Convert DataFrame to string type for ClickHouse
-            df_str = df.astype(str).replace('nan', '').replace('None', '')
-            
-            # Insert data
-            client.insert_df(table=full_table, df=df_str)
-            total_records += len(df)
-            
-            logger.info(f"✅ Loaded {len(df)} records into {full_table}")
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to process {csv_path}: {e}")
-            # Continue with other files rather than failing completely
-            continue
-    
-    # Close connection
+
+# ---------------- SKIP TRANSFORMATIONS ---------------- #
+def skip_dbt_transformations(**context):
+    """Skip dbt transformations - handled by separate unified silver DAG."""
+    logger.info("⏭️ Skipping dbt transformations (handled by unified silver DAG)")
+    return {"status": "skipped", "reason": "Silver processing moved to unified DAG"}
+
+def skip_data_quality_checks(**context):
+    """Skip data quality checks - handled by unified silver DAG."""
+    logger.info("⏭️ Skipping data quality checks (handled by unified silver DAG)")
+    return {"status": "skipped", "reason": "Quality checks moved to unified DAG"}
+
+def monitor_warehouse_health(**context):
+    """
+    Check ClickHouse accessibility and basic table health for the single schema.
+    """
+    import clickhouse_connect
+    logger.info("🏥 Monitoring warehouse health for Acumatica (single schema) …")
+
+    raw_schema = config['warehouse']['schemas']['raw_schema']
+
+    # ------ connect once ------
+    client = clickhouse_connect.get_client(
+        host=os.getenv('CLICKHOUSE_HOST'),
+        port=int(os.getenv('CLICKHOUSE_PORT', 8443)),
+        username=os.getenv('CLICKHOUSE_USER', 'default'),
+        password=os.getenv('CLICKHOUSE_PASSWORD'),
+        database=os.getenv('CLICKHOUSE_DATABASE', 'default'),
+        secure=True
+    )
+
+    overall = {
+        'overall_status': 'HEALTHY',
+        'schema': raw_schema,
+        'tables_analyzed': 0,
+        'partitioned_tables': 0,
+        'issues': [],
+        'recommendations': []
+    }
+
+    logger.info(f"🔎 Analysing schema {raw_schema}")
+
+    try:
+        # create in case it doesn't exist
+        client.command(f"CREATE DATABASE IF NOT EXISTS `{raw_schema}`")
+        tables = client.query(f"SHOW TABLES FROM `{raw_schema}`").result_rows
+        table_names = [t[0] for t in tables]
+        overall['tables_analyzed'] = len(table_names)
+
+        for t in table_names:
+            ddl = client.query(
+                f"SHOW CREATE TABLE `{raw_schema}`.`{t}`"
+            ).result_rows[0][0]
+
+            if "PARTITION BY" in ddl:
+                overall['partitioned_tables'] += 1
+            else:
+                overall['issues'].append(f"{t}: not partitioned")
+                overall['recommendations'].append(
+                    f"{t}@{raw_schema}: recreate with partitioning"
+                )
+
+    except Exception as e:
+        msg = f"{raw_schema}: cannot analyse – {e}"
+        overall['issues'].append(msg)
+
     client.close()
-    logger.info(f"✅ ClickHouse loading complete. Total records processed: {total_records}")
-    return total_records
 
-# ---------------- DBT TRANSFORMATIONS ---------------- #
-def list_dbt_models():
-    """List available dbt models."""
-    dbt_dir = config['dbt']['project_dir']
-    try:
-        cmd = ["dbt", "ls", "--resource-type", "model", "--output", "name"]
-        result = subprocess.run(cmd, cwd=dbt_dir, capture_output=True, text=True, check=True)
-        models = {line.strip() for line in result.stdout.splitlines() if line.strip()}
-        logger.info(f"🧾 Discovered {len(models)} dbt models")
-        return models
-    except subprocess.CalledProcessError as e:
-        logger.error(f"❌ Failed to list dbt models: {e.stderr}")
-        return set()
-    except Exception as e:
-        logger.error(f"❌ Error listing dbt models: {e}")
-        return set()
+    # decide global status
+    if overall['issues']:
+        overall['overall_status'] = 'DEGRADED'
+        logger.warning(f"⚠️ Warehouse issues: {overall['issues']}")
 
-def derive_raw_model_name(endpoint_key, project_models):
-    """Derive raw model name from endpoint key."""
-    candidates = [
-        f"{endpoint_key}_raw",
-        f"raw_{endpoint_key}",
-    ]
-    
-    # Try singular/plural variations
-    if endpoint_key.endswith('s'):
-        singular = endpoint_key[:-1]
-        candidates.extend([f"{singular}_raw", f"raw_{singular}"])
-    else:
-        candidates.extend([f"{endpoint_key}s_raw", f"raw_{endpoint_key}s"])
-    
-    for candidate in candidates:
-        if candidate in project_models:
-            return candidate
-    return None
+    context['task_instance'].xcom_push(key='warehouse_health', value=overall)
+    logger.info("✅ Warehouse health check complete")
+    return overall
 
-def run_dbt_transformations(**context):
-    """Run dbt transformations dynamically based on extracted data."""
-    logger.info("🔧 Running dbt transformations...")
-    
-    dbt_dir = config['dbt']['project_dir']
-    dbt_config = config['dbt']['execution']
-    
-    # Build dbt command options
-    options = []
-    if dbt_config.get('fail_fast'):
-        options.append("--fail-fast")
-    if dbt_config.get('full_refresh'):
-        options.append("--full-refresh")
-    if dbt_config.get('threads'):
-        options.append(f"--threads {dbt_config['threads']}")
-    
-    options_str = ' '.join(options)
-    
-    # Get available models
-    project_models = list_dbt_models()
-    if not project_models:
-        logger.warning("⚠️ No dbt models found, skipping transformations")
-        return
-    
-    # Determine which endpoints have data
-    csv_dir = config['extraction']['paths']['raw_data_directory']
-    csv_files = glob(os.path.join(csv_dir, '*.csv'))
-    endpoints_with_data = [os.path.splitext(os.path.basename(f))[0] for f in csv_files]
-    
-    # Filter to only enabled endpoints
-    enabled_endpoints_set = set(enabled_endpoints.keys())
-    endpoints_to_process = [ep for ep in endpoints_with_data if ep in enabled_endpoints_set]
-    
-    if not endpoints_to_process:
-        logger.warning("⚠️ No enabled endpoints with data found")
-        return
-    
-    logger.info(f"📊 Processing dbt models for endpoints: {endpoints_to_process}")
-    
-    # Process raw models first
-    raw_models_executed = []
-    for endpoint_key in endpoints_to_process:
-        raw_model = derive_raw_model_name(endpoint_key, project_models)
-        if raw_model:
-            try:
-                cmd = f"dbt run --select {raw_model} {options_str}"
-                logger.info(f"▶️ Running raw model: {cmd}")
-                
-                result = subprocess.run(
-                    cmd.split(), 
-                    cwd=dbt_dir, 
-                    capture_output=True, 
-                    text=True, 
-                    check=True
-                )
-                
-                raw_models_executed.append(raw_model)
-                logger.info(f"✅ Raw model {raw_model} completed successfully")
-                
-            except subprocess.CalledProcessError as e:
-                logger.error(f"❌ Raw model {raw_model} failed:")
-                logger.error(f"   stdout: {e.stdout}")
-                logger.error(f"   stderr: {e.stderr}")
-                raise
-        else:
-            logger.warning(f"⏭ No raw model found for endpoint {endpoint_key}")
-    
-    # Process business/silver models
-    business_models_executed = []
-    for raw_model in raw_models_executed:
-        # Derive business model name (remove _raw suffix)
-        base_name = raw_model.replace('_raw', '').replace('raw_', '')
-        business_candidates = [base_name]
-        
-        # Try singular/plural variations
-        if base_name.endswith('s'):
-            business_candidates.append(base_name[:-1])
-        else:
-            business_candidates.append(f"{base_name}s")
-        
-        business_model = None
-        for candidate in business_candidates:
-            if candidate in project_models:
-                business_model = candidate
-                break
-        
-        if business_model:
-            try:
-                cmd = f"dbt run --select {business_model} {options_str}"
-                logger.info(f"▶️ Running business model: {cmd}")
-                
-                result = subprocess.run(
-                    cmd.split(), 
-                    cwd=dbt_dir, 
-                    capture_output=True, 
-                    text=True, 
-                    check=True
-                )
-                
-                business_models_executed.append(business_model)
-                logger.info(f"✅ Business model {business_model} completed successfully")
-                
-            except subprocess.CalledProcessError as e:
-                logger.error(f"❌ Business model {business_model} failed:")
-                logger.error(f"   stdout: {e.stdout}")
-                logger.error(f"   stderr: {e.stderr}")
-                raise
-        else:
-            logger.info(f"🔍 No business model found for {raw_model}")
-    
-    logger.info(f"✅ dbt transformations complete. Raw models: {len(raw_models_executed)}, Business models: {len(business_models_executed)}")
-
-def check_transformed_data(**context):
-    """Perform basic data quality checks."""
-    logger.info("🔍 Performing data quality checks...")
-    
-    try:
-        import clickhouse_connect
-        
-        # Connection parameters
-        host = os.getenv('CLICKHOUSE_HOST')
-        port = int(os.getenv('CLICKHOUSE_PORT', 8443))
-        database = os.getenv('CLICKHOUSE_DATABASE', 'default')
-        username = os.getenv('CLICKHOUSE_USER', 'default')
-        password = os.getenv('CLICKHOUSE_PASSWORD')
-        
-        client = clickhouse_connect.get_client(
-            host=host, port=port, username=username, password=password,
-            database=database, secure=True
-        )
-        
-        # Check bronze layer
-        bronze_schema = config['warehouse']['schemas']['bronze_schema']
-        try:
-            bronze_tables = client.query(f"SHOW TABLES FROM {bronze_schema}")
-            bronze_table_names = [row[0] for row in bronze_tables.result_rows]
-            logger.info(f"📊 Bronze tables ({bronze_schema}): {bronze_table_names}")
-            
-            # Basic row counts
-            for table_name in bronze_table_names:
-                try:
-                    count_result = client.query(f"SELECT count() FROM {bronze_schema}.{table_name}")
-                    row_count = count_result.result_rows[0][0]
-                    logger.info(f"   {table_name}: {row_count:,} rows")
-                except Exception as e:
-                    logger.warning(f"   Failed to count {table_name}: {e}")
-        except Exception as e:
-            logger.warning(f"⚠️ Could not check bronze schema: {e}")
-        
-        # Check silver layer
-        silver_schema = config['warehouse']['schemas']['silver_schema']
-        try:
-            silver_tables = client.query(f"SHOW TABLES FROM {silver_schema}")
-            silver_table_names = [row[0] for row in silver_tables.result_rows]
-            logger.info(f"📊 Silver tables ({silver_schema}): {silver_table_names}")
-            
-            # Basic row counts
-            for table_name in silver_table_names:
-                try:
-                    count_result = client.query(f"SELECT count() FROM {silver_schema}.{table_name}")
-                    row_count = count_result.result_rows[0][0]
-                    logger.info(f"   {table_name}: {row_count:,} rows")
-                except Exception as e:
-                    logger.warning(f"   Failed to count {table_name}: {e}")
-        except Exception as e:
-            logger.warning(f"⚠️ Could not check silver schema: {e}")
-        
-        client.close()
-        logger.info("✅ Data quality checks completed")
-        
-    except Exception as e:
-        logger.warning(f"⚠️ Quality checks skipped due to error: {e}")
-
+# ---------------- PIPELINE SUMMARY ---------------- #
 def send_pipeline_success_notification(**context):
-    """Send pipeline success notification."""
-    send_success_email(context)
-    logger.info("✅ Pipeline success notification sent")
-    return "Success notification sent"
+    """Send extraction-only pipeline success notification."""
+    try:
+        # Get results from previous tasks
+        total_records = context['task_instance'].xcom_pull(
+            task_ids='run_coordinated_extraction', 
+            key='total_records'
+        ) or 0
+        
+        extraction_results = context['task_instance'].xcom_pull(
+            task_ids='run_coordinated_extraction', 
+            key='extraction_results'
+        ) or {}
+        
+        validation_results = context['task_instance'].xcom_pull(
+            task_ids='validate_extraction_integrity', 
+            key='validation_results'
+        ) or {}
+        
+        warehouse_health = context['task_instance'].xcom_pull(
+            task_ids='monitor_warehouse_health', 
+            key='warehouse_health'
+        ) or {}
+        
+        # Create extraction-focused summary
+        summary = f"""
+        🎉 ACUMATICA EXTRACTION SUCCESS SUMMARY 🎉
+        
+        📊 Data Extraction:
+        - Total records loaded: {total_records:,}
+        - Endpoints processed: {len(extraction_results)}
+        - Validation status: {validation_results.get('overall_status', 'Unknown')}
+        
+        🏥 Warehouse Health:
+        - Status: {warehouse_health.get('overall_status', 'Unknown')}
+        - Tables analyzed: {warehouse_health.get('tables_analyzed', 0)}
+        - Partitioned tables: {warehouse_health.get('partitioned_tables', 0)}
+        
+        📈 Endpoint Details:
+        """
+        
+        for endpoint, result in extraction_results.items():
+            if isinstance(result, int):
+                summary += f"        - {endpoint}: {result:,} records\n"
+            else:
+                summary += f"        - {endpoint}: {result}\n"
+        
+        if validation_results.get('warnings'):
+            summary += f"\n⚠️ Warnings ({len(validation_results['warnings'])}):\n"
+            for warning in validation_results['warnings'][:5]:  # Show first 5
+                summary += f"        - {warning}\n"
+        
+        summary += "\n💡 Silver transformations handled by unified silver DAG"
+        
+        logger.info(summary)
+        
+        # Send email notification
+        send_success_email(context)
+        
+        logger.info("✅ Extraction pipeline success notification sent")
+        return "Extraction success notification sent"
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to send pipeline notification: {e}")
+        return f"Notification failed: {e}"
 
-# ---------------- DAG DEFINITION ---------------- #
+# ---------------- DAG DEFINITION WITH PROPER DEPENDENCIES ---------------- #
 with dag:
     # Start task
     start_task = EmptyOperator(task_id='start_pipeline')
     
-    # Connection test
+    # Connection test (critical - fails pipeline if connections don't work)
     test_task = PythonOperator(
-        task_id='test_acumatica_connection',
-        python_callable=test_connection
+        task_id='test_connections',
+        python_callable=test_connection,
+        retries=2,
+        retry_delay=timedelta(minutes=2)
     )
     
-    # Dynamic extraction tasks
-    extraction_tasks = []
-    for endpoint_key in enabled_endpoints.keys():
-        extraction_task = PythonOperator(
-            task_id=f"extract_{endpoint_key}",
-            python_callable=acx.extract_acumatica_endpoint,
-            op_kwargs={'endpoint_key': endpoint_key},
-            provide_context=True
-        )
-        extraction_tasks.append(extraction_task)
+    # Coordinated extraction
+    extraction_task = PythonOperator(
+        task_id='run_coordinated_extraction',
+        python_callable=run_coordinated_extraction,
+        provide_context=True,
+        retries=1,
+        retry_delay=timedelta(minutes=5)
+    )
     
-    # Loading task
-    load_task = PythonOperator(
-        task_id='load_to_warehouse',
-        python_callable=load_csv_to_warehouse
+    # Critical validation task
+    validation_task = PythonOperator(
+        task_id='validate_extraction_integrity',
+        python_callable=validate_extraction_integrity,
+        provide_context=True,
+        retries=0,
+        trigger_rule=TriggerRule.ALL_SUCCESS
+    )
+    
+    # State finalization
+    finalize_state_task = PythonOperator(
+        task_id='finalize_extraction_state',
+        python_callable=finalize_extraction_state,
+        provide_context=True,
+        retries=0,
+        trigger_rule=TriggerRule.ALL_SUCCESS
+    )
+    
+    # Warehouse health monitoring
+    monitor_task = PythonOperator(
+        task_id='monitor_warehouse_health',
+        python_callable=monitor_warehouse_health,
+        provide_context=True,
+        retries=1,
+        trigger_rule=TriggerRule.ALL_SUCCESS
     )
     
     # Transformation task
     transform_task = PythonOperator(
-        task_id='run_dbt_transformations',
-        python_callable=run_dbt_transformations
+        task_id='skip_dbt_transformations',
+        python_callable=skip_dbt_transformations,
+        provide_context=True,
+        retries=0,
+        trigger_rule=TriggerRule.ALL_SUCCESS
     )
     
     # Quality check task
     quality_check_task = PythonOperator(
-        task_id='check_data_quality',
-        python_callable=check_transformed_data
+        task_id='skip_data_quality_checks',
+        python_callable=skip_data_quality_checks,
+        provide_context=True,
+        retries=0,
+        trigger_rule=TriggerRule.ALL_SUCCESS
     )
     
     # Success notification task
     success_notification_task = PythonOperator(
         task_id='send_success_notification',
-        python_callable=send_pipeline_success_notification
+        python_callable=send_pipeline_success_notification,
+        provide_context=True,
+        retries=2,
+        trigger_rule=TriggerRule.ALL_SUCCESS
     )
     
     # End task
-    end_task = EmptyOperator(task_id='end_pipeline')
-    
-    # Define task dependencies
-    start_task >> test_task >> extraction_tasks >> load_task >> transform_task >> quality_check_task >> success_notification_task >> end_task
+    end_task = EmptyOperator(
+        task_id='end_pipeline',
+        trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS
+    )
+
+# Define task dependencies
+start_task >> test_task >> extraction_task >> validation_task >> finalize_state_task >> monitor_task >> transform_task >> quality_check_task >> success_notification_task >> end_task

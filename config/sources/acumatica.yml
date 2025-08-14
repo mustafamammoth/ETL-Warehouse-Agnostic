@@ -1,190 +1,203 @@
-# acumatica.yml - Configuration for Acumatica DAG (incremental enabled, fixed)
+# acumatica.yml - Acumatica ERP configuration (cleaned and minimal)
 
 dag:
   dag_id: "acumatica_extract_transform"
-  description: "Extract from Acumatica API and transform with dbt (incremental)"
+  description: "Extract from Acumatica ERP API and transform with dbt (incremental, single schema)"
   owner: "data-team"
   schedule:
-    type: "daily"        # hourly | daily | weekly | monthly | manual | cron
-    time: "02:00"        # For daily/weekly/monthly schedules
+    # Schedule type for DAG execution (manual, hourly, daily, weekly, monthly, cron)
+    type: cron
+    # Cron expression for custom scheduling
+    cron_expression: "0 * * * *"
+    # Time for daily/weekly/monthly schedules (HH:MM format)
+    time: "06:00"
     timezone: "UTC"
+  # Maximum number of concurrent DAG runs (recommended: 1 for data consistency)
   max_active_runs: 1
-  start_date: "2025-07-18"
-  retries: 2
-  retry_delay_minutes: 5
+  start_date: "2025-08-10"
+  # Number of retry attempts on task failure (0-5 recommended)
+  retries: 1
+  # Minutes to wait between retries
+  retry_delay_minutes: 10
   email_on_failure: true
   email_on_retry: false
   email_on_success: true
+  # Tags for DAG categorization and filtering in Airflow UI
   tags:
     - "acumatica"
+    - "erp"
     - "extract"
     - "transform"
     - "dbt"
     - "incremental"
+    - "production"
+    - "single-schema"
 
 notifications:
   email:
+    # Email addresses to notify on task/DAG failures
     failure_recipients:
       - "mustafa.zaki@mammoth.org"
+    # Email addresses to notify on successful completion
     success_recipients:
       - "mustafa.zaki@mammoth.org"
+    # Email addresses to notify on task retries
     retry_recipients:
       - "mustafa.zaki@mammoth.org"
 
 api:
-  default_version: "23.200.001"
-  entity_endpoint: "entity/Default"
-  auth_endpoint: "entity/auth/login"
+  base_url: "https://mammoth.klearsystems.com/entity/Default/23.200.001"
+  login_url: "https://mammoth.klearsystems.com/entity/auth/login"
+  # Credentials are set via environment variables: ACUMATICA_USERNAME, ACUMATICA_PASSWORD
   rate_limiting:
-    requests_per_second: 8        # Conservative rate limit
+    # API requests per second to avoid rate limiting (1-10 for ERP systems)
+    requests_per_second: 5
+    # Number of retry attempts for failed API calls (1-5 recommended)
     max_retries: 3
-    backoff_factor: 2.0          # Exponential backoff
-    timeout_seconds: 60          # Increased timeout
-  pagination:
-    default_page_size: 100
-    max_page_size: 1000
+    # Exponential backoff multiplier for retries (1.0-3.0 typical)
+    backoff_factor: 2.0
+    # Request timeout in seconds (60-300 for ERP systems)
+    timeout_seconds: 120
+  
+  # Session management for Acumatica authentication
+  session:
+    # Enable cookie jar for session persistence (true, false)
+    cookie_jar_enabled: true
+    # Session timeout in minutes (15-60 typical)
+    session_timeout_minutes: 30
+    # Refresh session after N requests (20-100 typical)
+    max_session_reuse: 50
 
 extraction:
-  mode: "production"  # "testing" | "production"
+  # Extraction mode affects record limits and date ranges (testing, production)
+  mode: "production"
+  source_system: acumatica
   incremental:
+    # Enable incremental extraction using timestamps (true, false)
     enabled: true
-    default_timestamp_field: "LastModifiedDateTime"
-    lookback_minutes: 10         # Increased lookback for safety
-    full_refresh_days: 30        # Trigger full refresh every 30 days
+    # Minutes to overlap with previous extraction to prevent data gaps (30-120 for ERP)
+    lookback_minutes: 60
+    # Days after which to trigger full refresh instead of incremental (90-365)
+    full_refresh_days: 180
+    # File path for storing extraction state/watermarks
     state_path: "/opt/airflow/state/acumatica_watermarks.json"
+    initial_extraction:
+      # Reset all watermarks on next run - use once then set to false (true, false)
+      reset_watermarks: false
+      # Strategy for large initial extractions (chunked, full)
+      backfill_strategy: "chunked"
+      # Days per chunk for initial backfill (3-14 recommended for ERP)
+      backfill_chunk_days: 7
   testing:
-    max_records_per_endpoint: 50
+    # Maximum records per endpoint in testing mode (10-1000)
+    max_records_per_endpoint: 100
+    # Date range for testing extractions in days (1-7)
+    date_range_days: 3
   production:
+    # Maximum records per endpoint in production (null for unlimited)
     max_records_per_endpoint: null
+    # Date range for initial production extraction in days (30-180)
+    date_range_days: 90
   paths:
+    # Directory for temporary raw data storage
     raw_data_directory: "/opt/airflow/data/raw/acumatica"
 
   endpoints:
-    # High-frequency endpoints (multiple times per day)
-    sales_invoices:
-      path: "api/odata/dac/SOInvoice"
-      enabled: true
-      priority: "high"
-      schedule:
-        times: ["02:00", "08:00", "14:00", "20:00"]
-      custom:
-        incremental: true
-        timestamp_field: "LastModifiedDateTime"
-        max_pages: 200
-    
-    bill:
-      path: "Bill"
-      enabled: true
-      priority: "high"
-      schedule:
-        times: ["02:30", "08:30", "14:30", "20:30"]
-      custom:
-        incremental: true
-        timestamp_field: "LastModifiedDateTime"
-        max_pages: 200
-    
-    sales_orders:
-      path: "api/odata/dac/SOOrder"
-      enabled: true
-      priority: "medium"
-      # schedule:
-      #   times: ["03:00", "09:00", "15:00", "21:00"]
-      custom:
-        incremental: true
-        timestamp_field: "LastModifiedDateTime"
-        max_pages: 150
-    
-    purchase_order:
-      path: "PurchaseOrder"
-      enabled: true
-      priority: "medium"
-      schedule:
-        times: ["03:30", "09:30", "15:30", "21:30"]
-      custom:
-        incremental: true
-        timestamp_field: "LastModifiedDateTime"
-        max_pages: 150
-    
-    # Medium-frequency endpoints (daily)
-    customers:
-      path: "Customer"
-      enabled: true
-      priority: "medium"
-      schedule:
-        times: ["04:00"]
-      custom:
-        incremental: true
-        timestamp_field: "LastModifiedDateTime"
-        max_pages: 100
-    
-    vendor:
-      path: "Vendor"
-      enabled: true
-      priority: "medium"
-      schedule:
-        times: ["04:30"]
-      custom:
-        incremental: true
-        timestamp_field: "LastModifiedDateTime"
-        max_pages: 100
-    
-    # Low-frequency endpoints (less frequent updates)
-    stock_items:
-      path: "StockItem"
-      enabled: true
-      priority: "low"
-      schedule:
-        times: ["05:00"]
-      custom:
-        incremental: true
-        timestamp_field: "LastModifiedDateTime"
-        max_pages: 300
-    
-    # Additional endpoints (can be enabled as needed)
-    purchase_receipts:
-      path: "PurchaseReceipt"
-      enabled: false
-      custom:
-        incremental: true
-        timestamp_field: "LastModifiedDateTime"
-    
-    shipments:
-      path: "Shipment"
-      enabled: false
-      custom:
-        incremental: true
-        timestamp_field: "LastModifiedDateTime"
-    
-    payments:
-      path: "Payment"
-      enabled: false
-      custom:
-        incremental: true
-        timestamp_field: "LastModifiedDateTime"
+    # Endpoints that always run in every extraction
+    always_extract:
+      - activity
+      - appointment
+      - attribute_definition
+      - bill
+      - business_account
+      - case
+      - contact
+      - customer
+      - customer_location
+      - discount
+      - discount_code
+      - email
+      - employee
+      - event
+      - inventory_adjustment
+      - inventory_issue
+      - inventory_receipt
+      - invoice
+      - item_class
+      - item_warehouse
+      - kit_assembly
+      - kit_specification
+      - non_stock_item
+      - opportunity
+      - physical_inventory_review
+      - purchase_order
+      - purchase_receipt
+      - sales_invoice
+      - sales_order
+      - sales_price_worksheet
+      - salesperson
+      - service_order
+      - shipment
+      - stock_item
+      - task
+      - transfer_order
+      - vendor
+      - warehouse
+      
+    # Endpoints that can be optionally enabled/disabled
+    optional_extract:
+      - expense_claim
+      - expense_receipt
+      - lead
+      - vendor_price_worksheet
+      
+    # Endpoints to completely skip (move from always/optional to here)
+    disabled: []
+      
+    # Define which endpoints must complete before others can start
+    dependencies:
+      customer_location:
+        depends_on: ["customer"]
+        # Execution priority within dependency group (high, medium, low)
+        priority: "medium"
+      item_warehouse:
+        depends_on: ["stock_item", "warehouse"]
+        priority: "medium"
+      purchase_receipt:
+        depends_on: ["purchase_order"]
+        priority: "medium"
 
 warehouse:
+  # Active warehouse type for data loading (clickhouse, snowflake, bigquery)
   active_warehouse: "clickhouse"
   schemas:
-    bronze_schema: "acumatica_bronze"
-    silver_schema: "acumatica_silver"
-    raw_schema: "acumatica_bronze"      # Alias for compatibility
-    staging_schema: "acumatica_silver"  # Alias for compatibility
+    # Schema for raw/bronze layer data (single schema for all Acumatica data)
+    raw_schema: "bronze_acumatica"
+    bronze_schema: "bronze_acumatica"
+    # Schema for transformed/silver layer data
+    silver_schema: "silver_acumatica"
+    # Alias for dbt staging models
+    staging_schema: "silver_acumatica"
+  
+  clickhouse:
+    # Batch size for bulk inserts (100-1000 for ERP data)
+    chunk_size: 500
+    # Number of concurrent connections (1-5 for ERP)
+    connection_pool_size: 3
+    # Retry attempts for failed warehouse operations (1-5)
+    max_retries: 3
+    # Table partitioning strategy (by_date, by_month, none)
+    partition_strategy: "by_date"
 
 dbt:
+  # Path to dbt project directory
   project_dir: "/opt/airflow/dbt"
+  # Path to dbt profiles directory
   profiles_dir: "/opt/airflow/dbt"
   execution:
-    fail_fast: false
+    # Stop dbt run on first model failure (true, false)
+    fail_fast: true
+    # Force full refresh of incremental models (true, false)
     full_refresh: false
-    threads: 4
-    
-# Data quality settings
-data_quality:
-  enabled: true
-  checks:
-    - type: "row_count"
-      threshold_min: 0
-    - type: "freshness"
-      max_age_hours: 24
-    - type: "null_check"
-      critical_columns: ["id", "LastModifiedDateTime"]
+    # Number of concurrent dbt threads (1-4 recommended for ERP)
+    threads: 2

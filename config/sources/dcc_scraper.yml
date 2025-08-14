@@ -1,0 +1,76 @@
+# dcc_scraper.yml - DCC Cannabis License Scraper configuration
+
+dag:
+  dag_id: "dcc_license_scraper"
+  description: "Scrape DCC Cannabis License data and load to warehouse"
+  owner: "data-team"
+  schedule_interval: "0 2 * * *"  # Daily at 2 AM
+  max_active_runs: 1
+  start_date: "2025-06-30"
+  retries: 1
+  retry_delay_minutes: 10
+  email_on_failure: true
+  email_on_retry: false
+  email_on_success: true
+  tags:
+    - "dcc"
+    - "scraper"
+    - "cannabis_licenses"
+    - "production"
+
+notifications:
+  email:
+    failure_recipients:
+      - "mustafa.zaki@mammoth.org"
+    success_recipients:
+      - "mustafa.zaki@mammoth.org"
+
+scraper:
+  # Selenium WebDriver settings
+  webdriver:
+    headless: true
+    timeout_seconds: 30
+    window_size: "1920,1080"
+    
+  # DCC website settings
+  dcc_website:
+    base_url: "https://search.cannabis.ca.gov"
+    max_retries: 3
+    delay_between_requests: 3  # seconds
+    download_timeout: 60       # seconds for file downloads
+    
+  # Download settings
+  downloads:
+    directory: "/tmp/dcc_downloads"  # Temp directory for downloads
+    cleanup_after_processing: true
+
+extraction:
+  mode: "production"  # or "testing"
+  
+  # License prefixes to scrape
+  license_prefixes:
+    - "C9-"   # Manufacturing
+    - "C10-"  # Manufacturing
+    - "C11-"  # Distribution  
+    - "C12-"  # Microbusiness
+    
+  # Processing settings
+  processing:
+    full_refresh: true  # Always replace all data
+    validate_downloads: true
+    max_file_size_mb: 100
+    
+  testing:
+    max_records_per_prefix: 100
+  production:
+    max_records_per_prefix: null  # No limit
+
+warehouse:
+  active_warehouse: "clickhouse"
+  schemas:
+    raw_schema: "bronze_dcc"
+    
+  clickhouse:
+    chunk_size: 1000
+    max_retries: 3
+    table_name: "raw_dcc_licenses"
